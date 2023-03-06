@@ -3,7 +3,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple
 from itertools import chain
 
-from op_graph import SbpSignature, ArchConfig
+from op_graph import SbpSignature
+from utils import ArchConfig
 
 # Estimation level of operator's latency
 ESTIMATE_COMM = 1
