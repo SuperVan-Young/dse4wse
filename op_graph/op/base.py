@@ -1,8 +1,9 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple
-from op_graph import SbpSignature
 from itertools import chain
+
+from op_graph import SbpSignature, ArchConfig
 
 # Estimation level of operator's latency
 ESTIMATE_COMM = 1
@@ -26,23 +27,23 @@ class Operator(ABC):
         self.sbp_signatures : Dict[str, SbpSignature]
         self.sbp_signatures = {}
 
-    def estimate_cost(self, level, inter_layer_sbp: Dict[str, SbpSignature]) -> float:
+    def estimate_cost(self, level, arch_config: ArchConfig, inter_layer_sbp: Dict[str, SbpSignature]) -> float:
         cost = 0
         if level == ESTIMATE_COMM:
-            cost += self._estimate_communication_cost(inter_layer_sbp)
+            cost += self._estimate_communication_cost(arch_config, inter_layer_sbp)
         elif level == ESTIMATE_COMP_COMM:
-            cost += self._estimate_communication_cost(inter_layer_sbp)
-            cost += self._estimate_computation_cost()
+            cost += self._estimate_communication_cost(arch_config, inter_layer_sbp)
+            cost += self._estimate_computation_cost(arch_config)
         else:
             raise NotImplementedError(f"Estimation level {level} not implemented")
         return cost
     
     @abstractmethod
-    def _estimate_communication_cost(self, inter_layer_sbp: Dict[str, SbpSignature]) -> float:
+    def _estimate_communication_cost(self, arch_config: ArchConfig, inter_layer_sbp: Dict[str, SbpSignature]) -> float:
         raise NotImplementedError
     
     @abstractmethod
-    def _estimate_computation_cost(self) -> float:
+    def _estimate_computation_cost(self, arch_config: ArchConfig, ) -> float:
         raise NotImplementedError
     
     def derive_output_shapes(self) -> None:
