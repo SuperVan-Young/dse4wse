@@ -1,3 +1,5 @@
 test/
 data
 .vscode
+op_graph/graph_constructor/model/
+__pycache__

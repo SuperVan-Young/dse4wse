@@ -1,15 +1,18 @@
 
 from typing import Dict
+from collections import UserDict
 from functools import reduce
 
-class ArchConfig():
+class ArchConfig(UserDict):
+    def __init__(self, data: Dict) -> None:
+        self.data = data
 
-    def __init__(self, config: Dict) -> None:
-        self.config = config
+    def __setitem__(self, key, item) -> None:
+        raise RuntimeError("ArchConfig cannot be overwritten.")
 
     def __repr__(self) -> str:
         main_str = "ArchConfig {\n"
-        for name, val in self.config.items():
+        for name, val in self.data.items():
             main_str += f"  {name}: {val}\n"
         main_str += "}\n"
         return main_str
@@ -21,6 +24,26 @@ class ArchConfig():
             brief = reduce(lambda x, y: x+y, brief)
             return brief
         
-        brief_config = [f"{get_brief_name(name)}{val}" for name, val in self.config.items()]
+        brief_config = [f"{get_brief_name(name)}{val}" for name, val in self.data.items()]
         brief_config = "_".join(brief_config)
         return brief_config
+    
+if __name__ == "__main__":
+    # Here's an example configuration for our WSE
+
+    arch_config = ArchConfig({
+        'core_num_mac': 32,
+        'core_buffer_width': 16,
+        'core_buffer_size': 256,
+        'noc_virtual_channel': 4,
+        'noc_buffer_size': 8,
+        'noc_bandwidth': 4096,
+        'core_array_height': 25,
+        'core_array_width': 25,
+        'reticle_array_height': 8,
+        'reticle_array_width': 8,
+        'inter_reticle_bandwidth': 1024,
+        'inter_wafer_bandwidth': 256,
+    })
+    print(arch_config)
+    print(arch_config._shallow_repr())
