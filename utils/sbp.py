@@ -8,6 +8,7 @@ from copy import deepcopy
 from functools import reduce
 from logger import logger
 from arch_config import ArchConfig
+from tensor_info import TensorInfo
 
 SPLIT_SBP_PARALLEL = 1
 BROADCAST_SBP_PARALLEL = 2
@@ -123,7 +124,7 @@ def derive_reduced_sbp_signatures(tensor_shape: Tuple, sbp_signature: SbpSignatu
     return [new_sbp_signature]
 
 
-def calc_comm_cost_for_input(input_sbp_signature: SbpSignature, output_sbp_signatures: SbpSignature, arch_config: ArchConfig, shape: Tuple, dtype_size: int) -> float:
+def calc_comm_cost_for_input(input_sbp_signature: SbpSignature, output_sbp_signatures: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
     """Calculate communication cost for inter layer transmission.
     """
     # check partial dimensions
@@ -149,7 +150,7 @@ def calc_comm_cost_for_input(input_sbp_signature: SbpSignature, output_sbp_signa
     # However, for a simple implementation, the intra-layer transmission can also be attributed 
     # to inter-layer transmission.
     # TODO: use tree-based distribution for successive tensor's broadcasting
-    total_transmission = reduce(lambda x, y: x * y, shape) * dtype_size * max(1, output_broadcast_size // input_broadcast_size)
+    total_transmission = reduce(lambda x, y: x * y, tensor_info.shape) * tensor_info.dtype_size * max(1, output_broadcast_size // input_broadcast_size)
 
     # Since every core can be utilized for inter-layer data transmission,
     # ideally, we can formulate an fully-connected layer, whose bottleneck goes as follows
@@ -159,7 +160,7 @@ def calc_comm_cost_for_input(input_sbp_signature: SbpSignature, output_sbp_signa
     return total_transmission / total_bandwidth
 
 
-def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_signature: SbpSignature, arch_config: ArchConfig, shape: Tuple, dtype_size: int) -> float:
+def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_signature: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
     """Calculate communication cost for reducing partial to split/broadcast.
     """
     # check placement consistency
@@ -176,7 +177,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
         return 0
     
     # calculate block size / cluster size for each dimension
-    tensor_size = reduce(lambda x, y: x * y, shape)
+    tensor_size = reduce(lambda x, y: x * y, tensor_info.shape)
     block_sizes = []
     cur_block_size = tensor_size
     for dim_size, sbp_parallel in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels):
@@ -204,7 +205,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     total_transmission = 0
     for dim_size, sbp_parallel, block_size in zip(input_sbp_signature.placement, input_sbp_signature.sbp_parallels, block_sizes):
         if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
-            total_transmission = 2 * (dim_size - 1) * block_size * dtype_size
+            total_transmission = 2 * (dim_size - 1) * block_size * tensor_info.dtype_size
 
     # The bandwidth cannot be properly determined before placement & routing
     # For ring-based all-reduce, total_bandwidth = p * inter_cluster_bandwidth.

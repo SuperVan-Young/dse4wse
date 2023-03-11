@@ -1,4 +1,5 @@
 
+from typing import Tuple
 import re
 import numpy as np
 from onnx.mapping import TENSOR_TYPE_MAP
@@ -20,3 +21,13 @@ def onnx_dtype_2_storage_size(dtype: int) -> int:
             return 1
         else:
             return np.NAN
+
+class TensorInfo():
+    def __init__(self, shape: Tuple, onnx_dtype: int, name: str) -> None:
+        self.shape = shape
+        self.onnx_dtype = onnx_dtype
+        self.name = name
+
+    @property
+    def dtype_size(self):
+        return onnx_dtype_2_storage_size(self.onnx_dtype)
