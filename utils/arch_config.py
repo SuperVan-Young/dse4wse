@@ -29,12 +29,25 @@ class ArchConfig(UserDict):
         return brief_config
     
     def get_compute_power(self) -> int:
+        """Single core computation power, in terms of Operation/Cycle.
+        For simplicity, MAC on our WSE can execute one operation per cycle,
+        regardless of the data type.
+        """
         return self.data['core_num_mac']
     
     def get_memory_bandwidth(self) -> int:
+        """Single core memory bandwidth, in terms of Byte/Cycle.
+        """
         return self.data['core_buffer_width']
     
+    def get_memory_size(self) -> int:
+        """In terms of Byte.
+        """
+        return self.data['core_buffer_width'] * self.data['core_buffer_size']
+    
     def get_interconnect_bandwidth(self, connect_type='noc'):
+        """In terms of Byte/Cycle
+        """
         if connect_type == 'noc':
             return self.data['noc_bandwidth']
         elif connect_type == 'reticle':

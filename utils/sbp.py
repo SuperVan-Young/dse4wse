@@ -72,10 +72,17 @@ class SbpSignature():
     def __init__(self, placement: np.array, sbp_parallels: List[SbpParallel]) -> None:
         self.placement = placement
         self.sbp_parallels = sbp_parallels
-        assert len(placement.size) == len(sbp_parallels)
+        assert len(placement.size()) == len(sbp_parallels)
 
     def get_total_cores(self):
         return reduce(lambda x, y: x * y, self.placement)
+    
+    def get_broadcast_size(self):
+        broadcast_size = 1
+        for dim_size, sbp_parallel in zip(self.placement, self.sbp_parallels):
+            if sbp_parallel.type == BROADCAST_SBP_PARALLEL:
+                broadcast_size *= dim_size
+        return broadcast_size
 
     def get_simplified_sbp_parallel_list(self):
         return [str(s) for s in self.sbp_parallels]
@@ -137,16 +144,9 @@ def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], out
     partial_input_sbp_parallels = [x for x in input_sbp_signature.sbp_parallels if x.type == PARTIAL_SBP_PARALLEL]
     num_partial_dims = len(partial_input_sbp_parallels)
     assert num_partial_dims == 0, "Currently we don't support > 0 partial sum dimension."
-
-    def get_broadcast_size(sbp_signature: SbpSignature):
-        broadcast_size = 1
-        for dim_size, sbp_parallel in zip(sbp_signature.placement, sbp_signature.sbp_parallels):
-            if sbp_parallel.type == BROADCAST_SBP_PARALLEL:
-                broadcast_size *= dim_size
-        return broadcast_size
     
-    input_broadcast_size = get_broadcast_size(input_sbp_signature)
-    output_broadcast_size = get_broadcast_size(output_sbp_signatures)
+    input_broadcast_size = input_sbp_signature.get_broadcast_size()
+    output_broadcast_size = output_sbp_signatures.get_broadcast_size()
 
     # The amount of inter-layer transmission is essentially one copy of the tensor,
     # and the successive tensor's broadcasting is executed inside the layer.
@@ -180,19 +180,18 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
         return 0
     
     # calculate block size / cluster size for each dimension
-    tensor_size = reduce(lambda x, y: x * y, tensor_info.shape)
     block_sizes = []
-    cur_block_size = tensor_size
-    for dim_size, sbp_parallel in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels):
+    cur_block_size = tensor_info.numel()
+    for dim_size, sbp_parallel in zip(input_sbp_signature.placement.size(), input_sbp_signature.sbp_parallels):
         if sbp_parallel.type == SPLIT_SBP_PARALLEL:
             cur_block_size /= dim_size
         block_sizes.append(cur_block_size)
     
     # calculate cluster size for each dimension
-    total_core = reduce(lambda x, y: x * y, input_sbp_signature.placement.shape)
+    total_core = input_sbp_signature.get_total_cores()
     cluster_sizes = []
     cur_cluster_number = 1
-    for dim_size in input_sbp_signature.placement.shape:
+    for dim_size in input_sbp_signature.placement.size():
         cluster_sizes.append(total_core / cur_cluster_number)
         cur_cluster_number *= dim_size
 
@@ -206,7 +205,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
         if input_sbp_parallel != output_sbp_parallel:
             assert input_sbp_parallel == 'P' and output_sbp_parallel == "B"
     total_transmission = 0
-    for dim_size, sbp_parallel, block_size in zip(input_sbp_signature.placement, input_sbp_signature.sbp_parallels, block_sizes):
+    for dim_size, sbp_parallel, block_size in zip(input_sbp_signature.placement.size(), input_sbp_signature.sbp_parallels, block_sizes):
         if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
             total_transmission = 2 * (dim_size - 1) * block_size * tensor_info.dtype_size
 
@@ -215,7 +214,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     # Inter_cluster_bandwidth is optimisitally set with #cluster_core * #NoC_bw.
     total_bandwidth = 0
     noc_bandwidth = arch_config.get_interconnect_bandwidth()
-    for dim_size, sbp_parallel, cluster_size in zip(input_sbp_signature.placement, input_sbp_signature.sbp_parallels, cluster_sizes):
+    for dim_size, sbp_parallel, cluster_size in zip(input_sbp_signature.placement.size(), input_sbp_signature.sbp_parallels, cluster_sizes):
         if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
             total_bandwidth = dim_size * cluster_size * noc_bandwidth
 

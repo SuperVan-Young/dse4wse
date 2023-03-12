@@ -2,6 +2,7 @@
 from typing import Tuple
 import re
 import numpy as np
+from functools import reduce
 from onnx.mapping import TENSOR_TYPE_MAP
 
 def onnx_dtype_2_storage_size(dtype: int) -> int:
@@ -31,3 +32,6 @@ class TensorInfo():
     @property
     def dtype_size(self):
         return onnx_dtype_2_storage_size(self.onnx_dtype)
+    
+    def numel(self):
+        return reduce(lambda x, y: x * y, self.shape)
