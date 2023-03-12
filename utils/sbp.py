@@ -1,5 +1,5 @@
 
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 import numpy as np
 import pandas as pd
 import re
@@ -124,9 +124,12 @@ def derive_reduced_sbp_signatures(tensor_shape: Tuple, sbp_signature: SbpSignatu
     return [new_sbp_signature]
 
 
-def calc_comm_cost_for_input(input_sbp_signature: SbpSignature, output_sbp_signatures: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
+def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], output_sbp_signatures: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
     """Calculate communication cost for inter layer transmission.
     """
+    if input_sbp_signature is None:
+        return 0  # simply assume this tensor has already been placed
+
     # check partial dimensions
     # TODO: We could allow transmitting partial tensors with 1-to-1 routing.
     # This is beneficial for reducing unnecessary collective comms.
@@ -154,7 +157,7 @@ def calc_comm_cost_for_input(input_sbp_signature: SbpSignature, output_sbp_signa
 
     # Since every core can be utilized for inter-layer data transmission,
     # ideally, we can formulate an fully-connected layer, whose bottleneck goes as follows
-    noc_bandwidth = arch_config['noc_bandwidth']
+    noc_bandwidth = arch_config.get_interconnect_bandwidth()
     total_bandwidth = min(input_sbp_signature.get_total_cores(), output_sbp_signatures.get_total_cores()) * noc_bandwidth
 
     return total_transmission / total_bandwidth
@@ -211,7 +214,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     # For ring-based all-reduce, total_bandwidth = p * inter_cluster_bandwidth.
     # Inter_cluster_bandwidth is optimisitally set with #cluster_core * #NoC_bw.
     total_bandwidth = 0
-    noc_bandwidth = arch_config['noc_bandwidth']
+    noc_bandwidth = arch_config.get_interconnect_bandwidth()
     for dim_size, sbp_parallel, cluster_size in zip(input_sbp_signature.placement, input_sbp_signature.sbp_parallels, cluster_sizes):
         if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
             total_bandwidth = dim_size * cluster_size * noc_bandwidth

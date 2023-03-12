@@ -28,6 +28,22 @@ class ArchConfig(UserDict):
         brief_config = "_".join(brief_config)
         return brief_config
     
+    def get_compute_power(self) -> int:
+        return self.data['core_num_mac']
+    
+    def get_memory_bandwidth(self) -> int:
+        return self.data['core_buffer_width']
+    
+    def get_interconnect_bandwidth(self, connect_type='noc'):
+        if connect_type == 'noc':
+            return self.data['noc_bandwidth']
+        elif connect_type == 'reticle':
+            return self.data['inter_reticle_bandwidth']
+        elif connect_type == 'wafer':
+            return self.data['inter_wafer_bandwidth']
+        else:
+            raise NotImplementedError
+    
 if __name__ == "__main__":
     # Here's an example configuration for our WSE
 
