@@ -56,10 +56,7 @@ class Operator(ABC):
             comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
                                                              arch_config=arch_config, tensor_info=tensor_info)
         
-        if memory_cost == np.NaN:
-            return np.NaN
-        else:
-            return comm_input_cost + compute_cost + comm_reduce_cost
+        return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
 
     def generate_candidate_sbp_signatures(self):
         assert self.num_core_range != None
@@ -81,11 +78,15 @@ class Operator(ABC):
         return best_sbp_signatures
     
     @abstractmethod
-    def _estimate_compute_cost(self, sbp_signatures: List[SbpSignature], arch_config: ArchConfig) -> float:
+    def _estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
+        """We use roofline model to estimate actual computation cost.
+        """
         raise NotImplementedError
     
     @abstractmethod
-    def _estimate_memory_cost(self, sbp_signatures: List[SbpSignature], arch_config: ArchConfig):
+    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig):
+        """0 for enough memory, np.inf for invlaid memory
+        """
         raise NotImplementedError
     
     @abstractmethod
