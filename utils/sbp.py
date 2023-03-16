@@ -72,7 +72,7 @@ class SbpSignature():
     def __init__(self, placement: np.array, sbp_parallels: List[SbpParallel]) -> None:
         self.placement = placement
         self.sbp_parallels = sbp_parallels
-        assert len(placement.size()) == len(sbp_parallels)
+        assert len(placement.shape) == len(sbp_parallels)
 
     def get_total_cores(self):
         return reduce(lambda x, y: x * y, self.placement)
@@ -88,7 +88,7 @@ class SbpSignature():
         return [str(s) for s in self.sbp_parallels]
     
     def __repr__(self):
-        main_str = ",".join([f"{str(s)}: {p}" for p, s in zip(self.placement.size(), self.sbp_parallels)])
+        main_str = ",".join([f"{str(s)}: {p}" for p, s in zip(self.placement.shape, self.sbp_parallels)])
         main_str = "Sbp Signature [" + main_str + "]"
         return main_str
 
@@ -98,7 +98,7 @@ def derive_output_sbp_signature(input_sbp_signatures: Dict[str, SbpSignature], r
     placements = [sbp.placement for sbp in input_sbp_signatures.values()]
     first_placement = placements[0]
     for placement_ in placements:
-        if first_placement.size() != placement_.size():
+        if first_placement.shape != placement_.shape:
             raise ValueError("Unmatched placement when deriving sbp signatures!")
     
     lookup = {name: sbp.get_simplified_sbp_parallel_list() for name, sbp in input_sbp_signatures}
@@ -182,7 +182,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     # calculate block size / cluster size for each dimension
     block_sizes = []
     cur_block_size = tensor_info.numel()
-    for dim_size, sbp_parallel in zip(input_sbp_signature.placement.size(), input_sbp_signature.sbp_parallels):
+    for dim_size, sbp_parallel in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels):
         if sbp_parallel.type == SPLIT_SBP_PARALLEL:
             cur_block_size /= dim_size
         block_sizes.append(cur_block_size)
@@ -191,7 +191,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     total_core = input_sbp_signature.get_total_cores()
     cluster_sizes = []
     cur_cluster_number = 1
-    for dim_size in input_sbp_signature.placement.size():
+    for dim_size in input_sbp_signature.placement.shape:
         cluster_sizes.append(total_core / cur_cluster_number)
         cur_cluster_number *= dim_size
 
@@ -205,7 +205,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
         if input_sbp_parallel != output_sbp_parallel:
             assert input_sbp_parallel == 'P' and output_sbp_parallel == "B"
     total_transmission = 0
-    for dim_size, sbp_parallel, block_size in zip(input_sbp_signature.placement.size(), input_sbp_signature.sbp_parallels, block_sizes):
+    for dim_size, sbp_parallel, block_size in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels, block_sizes):
         if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
             total_transmission = 2 * (dim_size - 1) * block_size * tensor_info.dtype_size
 
@@ -214,7 +214,7 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     # Inter_cluster_bandwidth is optimisitally set with #cluster_core * #NoC_bw.
     total_bandwidth = 0
     noc_bandwidth = arch_config.get_interconnect_bandwidth()
-    for dim_size, sbp_parallel, cluster_size in zip(input_sbp_signature.placement.size(), input_sbp_signature.sbp_parallels, cluster_sizes):
+    for dim_size, sbp_parallel, cluster_size in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels, cluster_sizes):
         if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
             total_bandwidth = dim_size * cluster_size * noc_bandwidth
 
