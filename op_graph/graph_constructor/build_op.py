@@ -13,12 +13,16 @@ from op_graph.op import (
 from utils import logger, TensorInfo
 
 def build_operator(name: str, op_type: str, 
-                   input_tensors: Dict[str, TensorInfo], 
-                   output_tensors: Dict[str, TensorInfo]) -> Operator:
+                   input_tensors: List[TensorInfo], 
+                   output_tensors: List[TensorInfo]) -> Operator:
     
-    if op_type == 'log':
+    if op_type == 'Log':
+        input_tensors = {'in': input_tensors[0]}
+        output_tensors = {'out': output_tensors[0]}
         op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, operation_intensity=1)
-    elif op_type == 'sqrt':
+    elif op_type == 'Sqrt':
+        input_tensors = {'in': input_tensors[0]}
+        output_tensors = {'out': output_tensors[0]}
         op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, operation_intensity=10)
     else:
         raise NotImplementedError
