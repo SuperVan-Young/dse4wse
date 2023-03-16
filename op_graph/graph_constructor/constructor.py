@@ -10,9 +10,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from utils import logger
+from utils import logger, TensorInfo
 from op_graph import OpGraph
-from op_graph.op import build_operator
+from build_op import build_operator
 
 from onnxsim import simplify
 from transformers import BertTokenizer, BertModel
@@ -51,10 +51,13 @@ class OpGraphConstructor():
                 logger.critical("We don't have onnx model %s" % (model_name, ))
                 exit(1)
 
+        logger.debug("Loading model %s" % (model_name,))
         with open(model_path, 'rb') as f:
             model = onnx.load(f)
 
         # FIXME: onnxsim cannot behave properly on dynamic inputs
+        # FIXME: simplification takes too much time
+        logger.debug("Simplifying model %s" % (model_name,))
         model, check = simplify(model)
         assert check
         
@@ -72,16 +75,38 @@ class OpGraphConstructor():
     def _build_from_onnx_model(self, onnx_model) -> OpGraph:
         op_graph = OpGraph()
 
+        def get_tensor_info(val):
+            name = val.name
+            shape = [d.dim_value for d in val.type.tensor_type.shape.dim]
+            dtype = val.type.tensor_type.elem_type
+            tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name)
+            return tensor_info
+        
+        def get_tensor_info_from_initializer(val):
+            name = val.name
+            shape = [d for d in val.dims]
+            dtype = val.data_type
+            tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name)
+            return tensor_info
+
+        tensor_infos = {val.name: get_tensor_info(val) for val in onnx_model.graph.value_info}
+        tensor_infos.update({val.name: get_tensor_info(val) for val in onnx_model.graph.input})
+        tensor_infos.update({val.name: get_tensor_info(val) for val in onnx_model.graph.output})
+        tensor_infos.update({val.name: get_tensor_info_from_initializer(val) for val in onnx_model.graph.initializer})
+
         # add operators from graph proto
         for op_proto in onnx_model.graph.node:
             name = op_proto.name
+            op_type = op_proto.op_type
+            input_tensors = [tensor_infos[i] for i in op_proto.input]
+            output_tensors = [tensor_infos[i] for i in op_proto.output]
             try:
-                op_node = build_operator(op_proto)
+                op_node = build_operator(name, op_type, input_tensors, output_tensors)
             except NotImplementedError:
                 logger.debug(f"Ignoring operator {name} due to missing implementation.")
                 continue
             op_graph.add_node(name)
-            op_graph.nodes[name].operator = op_node
+            op_graph.nodes[name]['operator'] = op_node
 
         # connect edges
         for u, u_op in op_graph.nodes(data='operator'):

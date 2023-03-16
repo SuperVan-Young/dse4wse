@@ -7,7 +7,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from base import Operator
 from utils import (
-    ArchConfig, SbpSignature, TensorInfo
+    ArchConfig, SbpSignature, TensorInfo, generate_split_from_fixed_shape
 )
 
 
@@ -16,8 +16,8 @@ class UnaryElementwiseOperator(Operator):
                  operation_intensity=1, *args, **kwargs) -> None:
         super().__init__(name, op_type, input_tensors, output_tensors, *args, **kwargs)
         self.operation_intensity = operation_intensity  # operation / element
-        assert len(input_tensors) == 1
-        assert len(output_tensors) == 1
+        assert len(input_tensors) == 1, input_tensors
+        assert len(output_tensors) == 1, output_tensors
         assert "in" in input_tensors
         assert "out" in output_tensors
 
@@ -46,9 +46,27 @@ class UnaryElementwiseOperator(Operator):
 
         return 0 if used_memory < actual_memory else np.inf
     
-    def _generate_candidate_sbp_signature():
-        raise NotImplementedError
+    def _generate_candidate_sbp_signature(self):
+        tensor_info = self.input_tensors['in']
+        num_dims = len(tensor_info.shape)
+        split_1d = generate_split_from_fixed_shape(
+            tensor_shape=self.input_tensors['in'].shape,
+            split_dims=[num_dims - 1],
+            core_range=self.num_core_range,
+        )
+        split_2d = generate_split_from_fixed_shape(
+            tensor_shape=self.input_tensors['in'].shape,
+            split_dims=[num_dims - 2, num_dims - 1],
+            core_range=self.num_core_range,
+        )
+        self._candidate_sbp_signatures = split_1d + split_2d
     
     @property
     def _rule_table(self) -> pd.DataFrame:
-        raise NotImplementedError
+        tensor_info = self.input_tensors['in']
+        num_dims = len(tensor_info.shape)
+        data = {
+            'in': ['B'] + [f"S({i})" for i in range(num_dims)],
+            'out': ['B'] + [f"S({i})" for i in range(num_dims)],
+        }
+        return pd.DataFrame(data)

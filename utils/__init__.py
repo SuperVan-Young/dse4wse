@@ -12,3 +12,4 @@ from sbp import (
     calc_comm_cost_for_reduction,
 )
 from tensor_info import TensorInfo
+from split import generate_split_from_fixed_shape

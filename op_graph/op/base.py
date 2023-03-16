@@ -93,7 +93,7 @@ class Operator(ABC):
     def _generate_candidate_sbp_signature():
         raise NotImplementedError
     
-    @abstractmethod
     @property
+    @abstractmethod
     def _rule_table(self) -> pd.DataFrame:
         raise NotImplementedError
