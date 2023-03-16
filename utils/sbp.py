@@ -93,7 +93,7 @@ class SbpSignature():
         return main_str
 
 
-def derive_output_sbp_signature(input_sbp_signatures: Dict[SbpSignature], rule_table: pd.DataFrame) -> Dict[SbpSignature]:
+def derive_output_sbp_signature(input_sbp_signatures: Dict[str, SbpSignature], rule_table: pd.DataFrame) -> Dict[str, SbpSignature]:
     # validate placement shape
     placements = [sbp.placement for sbp in input_sbp_signatures.values()]
     first_placement = placements[0]

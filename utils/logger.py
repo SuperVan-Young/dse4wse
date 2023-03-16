@@ -5,7 +5,7 @@ import os
 import logging
 from datetime import datetime
 
-DEFAULT_FORMAT = "[%(filename)s:%(lineno)d] %(message)s"
+DEFAULT_FORMAT = "(%(levelname)s) %(asctime)s [%(filename)s:%(lineno)d] %(message)s"
 
 logger = None
 
@@ -41,5 +41,5 @@ def init_logger(name="DSE4WSE", level="INFO", stream=True, logdir=None,
     if logfile is not None:
         logger.info(f"Logfile {logfile}")
 
-init_logger(name="DSE4WSE", level="INFO", stream=True, logdir=None, 
+init_logger(name="DSE4WSE", level="DEBUG", stream=True, logdir=None, 
             fmt=DEFAULT_FORMAT, force_init=True)
