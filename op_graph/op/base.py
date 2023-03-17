@@ -39,9 +39,10 @@ class Operator(ABC):
         comm_input_cost = 0
         for param_name, current_sbp_signature in sbp_signatures.items():
             tensor_info = self.input_tensors[param_name]
-            previous_sbp_signatures = inter_layer_sbp_signatures[tensor_info.name]
-            comm_input_cost += calc_comm_cost_for_input(previous_sbp_signatures, current_sbp_signature, 
-                                                        arch_config=arch_config, tensor_info=tensor_info)
+            if not tensor_info.inplace:
+                previous_sbp_signatures = inter_layer_sbp_signatures.get([tensor_info.name], None)
+                comm_input_cost += calc_comm_cost_for_input(previous_sbp_signatures, current_sbp_signature, 
+                                                            arch_config=arch_config, tensor_info=tensor_info)
 
         compute_cost = self._estimate_compute_cost(self, sbp_signatures, arch_config)
         memory_cost = self._estimate_memmory_cost(self, sbp_signatures, arch_config)

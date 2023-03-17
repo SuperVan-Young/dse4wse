@@ -24,10 +24,11 @@ def onnx_dtype_2_storage_size(dtype: int) -> int:
             return np.NAN
 
 class TensorInfo():
-    def __init__(self, shape: Tuple, onnx_dtype: int, name: str) -> None:
+    def __init__(self, shape: Tuple, onnx_dtype: int, name: str, inplace=False) -> None:
         self.shape = shape
         self.onnx_dtype = onnx_dtype
         self.name = name
+        self.inplace = inplace
 
     @property
     def dtype_size(self):

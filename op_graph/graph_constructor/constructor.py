@@ -75,24 +75,24 @@ class OpGraphConstructor():
     def _build_from_onnx_model(self, onnx_model) -> OpGraph:
         op_graph = OpGraph()
 
-        def get_tensor_info(val):
+        def get_tensor_info(val, inplace):
             name = val.name
             shape = [d.dim_value for d in val.type.tensor_type.shape.dim]
             dtype = val.type.tensor_type.elem_type
-            tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name)
+            tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name, inplace=inplace)
             return tensor_info
         
-        def get_tensor_info_from_initializer(val):
+        def get_tensor_info_from_initializer(val, inplace):
             name = val.name
             shape = [d for d in val.dims]
             dtype = val.data_type
-            tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name)
+            tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name, inplace=inplace)
             return tensor_info
 
-        tensor_infos = {val.name: get_tensor_info(val) for val in onnx_model.graph.value_info}
-        tensor_infos.update({val.name: get_tensor_info(val) for val in onnx_model.graph.input})
-        tensor_infos.update({val.name: get_tensor_info(val) for val in onnx_model.graph.output})
-        tensor_infos.update({val.name: get_tensor_info_from_initializer(val) for val in onnx_model.graph.initializer})
+        tensor_infos = {val.name: get_tensor_info(val, inplace=False) for val in onnx_model.graph.value_info}
+        tensor_infos.update({val.name: get_tensor_info(val, inplace=True) for val in onnx_model.graph.input})
+        tensor_infos.update({val.name: get_tensor_info(val, inplace=True) for val in onnx_model.graph.output})
+        tensor_infos.update({val.name: get_tensor_info_from_initializer(val, inplace=True) for val in onnx_model.graph.initializer})
 
         # add operators from graph proto
         for op_proto in onnx_model.graph.node:
@@ -138,6 +138,8 @@ def build_bert_model():
         'position_ids': torch.ones((1, max_seq_len)).long(),
     }
 
+    # TODO: simplification before loading the model
+    # FIXME: stop exporting initializer
     with open(os.path.join(MODEL_CACHE_DIR, "bert_model.onnx"), 'wb') as f:
         torch.onnx.export(model, args=(encoded_input,), f=f,
                           input_names = ['input_ids', 'attention_mask', 'token_type_ids', 'position_ids'],
