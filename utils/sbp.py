@@ -121,11 +121,11 @@ def derive_output_sbp_signature(input_sbp_signatures: Dict[str, SbpSignature], r
         if first_placement.shape != placement_.shape:
             raise ValueError("Unmatched placement when deriving sbp signatures!")
     
-    lookup = {name: sbp.get_simplified_sbp_parallel_list() for name, sbp in input_sbp_signatures}
+    lookup = {name: sbp.get_simplified_sbp_parallel_list() for name, sbp in input_sbp_signatures.items()}
     lookup = pd.DataFrame(lookup)
     lookup_result = pd.merge(left=lookup, right=rule_table, how='left')  # nan occurs on invalid derivation
 
-    output_tensor_names = {name for name in rule_table.columns if name not in input_sbp_signatures}
+    output_tensor_names = {name for name in rule_table.columns if name not in input_sbp_signatures.items()}
     output_sbp_signatures = {}
     for name in output_tensor_names:
         try:
