@@ -5,6 +5,7 @@ import pandas as pd
 import re
 
 from copy import deepcopy
+from math import sqrt
 from functools import reduce
 from logger import logger
 from arch_config import ArchConfig
@@ -77,12 +78,21 @@ class SbpSignature():
     def get_total_cores(self):
         return reduce(lambda x, y: x * y, self.placement)
     
-    def get_broadcast_size(self):
-        broadcast_size = 1
+    def _get_sbp_size(self, sbp_type: int):
+        total_size = 1
         for dim_size, sbp_parallel in zip(self.placement, self.sbp_parallels):
-            if sbp_parallel.type == BROADCAST_SBP_PARALLEL:
-                broadcast_size *= dim_size
-        return broadcast_size
+            if sbp_parallel.type == sbp_type:
+                total_size *= dim_size
+        return total_size
+
+    def get_broadcast_size(self):
+        return self._get_sbp_size(BROADCAST_SBP_PARALLEL)
+    
+    def get_split_size(self):
+        return self._get_sbp_size(SPLIT_SBP_PARALLEL)
+    
+    def get_partial_size(self):
+        return self._get_sbp_size(PARTIAL_SBP_PARALLEL)
 
     def get_simplified_sbp_parallel_list(self):
         return [str(s) for s in self.sbp_parallels]
@@ -134,33 +144,36 @@ def derive_reduced_sbp_signatures(tensor_shape: Tuple, sbp_signature: SbpSignatu
 def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], output_sbp_signatures: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
     """Calculate communication cost for inter layer transmission.
     """
-    if input_sbp_signature is None:
-        return 0  # simply assume this tensor has already been placed
-
     # check partial dimensions
     # TODO: We could allow transmitting partial tensors with 1-to-1 routing.
     # This is beneficial for reducing unnecessary collective comms.
     # But we leave it for future implementation
-    partial_input_sbp_parallels = [x for x in input_sbp_signature.sbp_parallels if x.type == PARTIAL_SBP_PARALLEL]
-    num_partial_dims = len(partial_input_sbp_parallels)
-    assert num_partial_dims == 0, "Currently we don't support > 0 partial sum dimension."
+    if input_sbp_signature:
+        input_partial_size = input_sbp_signature.get_partial_size()
+        assert input_partial_size == 1, "Currently we don't support inter-layer partial transmission"
     
-    input_broadcast_size = input_sbp_signature.get_broadcast_size()
+    # The amount of inter-layer transmission is essentially one copy of the tensor
+    # i.e. (S0, S1) -> (S0', S1')
+    # We take a coarse estimation of inter-layer bandwidth here
+    output_split_size = output_sbp_signatures.get_split_size()
+    if input_sbp_signature:
+        input_split_size = input_sbp_signature.get_split_size()
+        split_cluster_bandwidth = sqrt(min(input_split_size, output_split_size)) * arch_config.get_interconnect_bandwidth()
+    else:
+        split_cluster_bandwidth = sqrt(output_split_size) * arch_config.get_interconnect_bandwidth()
+    tensor_size = tensor_info.numel() * tensor_info.dtype_size
+
+    inter_layer_comm_cost = tensor_size // split_cluster_bandwidth
+
+    # Intra-layer broadcasting
+    # To form a broadcasting tree on a 2d array of N cores, the critical path is from center to corner, whose length ~ sqrt(N)
+    # Each 'core' here is a split cluster, whose bandwidth has been estimated
     output_broadcast_size = output_sbp_signatures.get_broadcast_size()
+    intra_layer_comm_cost = (sqrt(output_broadcast_size) * tensor_size) // split_cluster_bandwidth
 
-    # The amount of inter-layer transmission is essentially one copy of the tensor,
-    # and the successive tensor's broadcasting is executed inside the layer.
-    # However, for a simple implementation, the intra-layer transmission can also be attributed 
-    # to inter-layer transmission.
-    # TODO: use tree-based distribution for successive tensor's broadcasting
-    total_transmission = reduce(lambda x, y: x * y, tensor_info.shape) * tensor_info.dtype_size * max(1, output_broadcast_size // input_broadcast_size)
+    comm_cost = inter_layer_comm_cost + intra_layer_comm_cost
 
-    # Since every core can be utilized for inter-layer data transmission,
-    # ideally, we can formulate an fully-connected layer, whose bottleneck goes as follows
-    noc_bandwidth = arch_config.get_interconnect_bandwidth()
-    total_bandwidth = min(input_sbp_signature.get_total_cores(), output_sbp_signatures.get_total_cores()) * noc_bandwidth
-
-    return total_transmission / total_bandwidth
+    return comm_cost
 
 
 def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_signature: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
