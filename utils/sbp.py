@@ -59,6 +59,16 @@ def get_sbp_parallel_from_str(s: str) -> SbpParallel:
         return SplitSbpParallel(dim=dim)
     else:
         raise RuntimeError("Invalid sbp parallel str %s" % (s,))
+    
+class Placement():
+    def __init__(self, array: Union[None, np.array] = None, shape: Union[Tuple[int], None] = None) -> None:
+        if array:
+            self.array = array
+            self.shape = array.shape
+        else:
+            assert shape != None
+            self.array = None
+            self.shape = shape
 
 
 class SbpSignature():
@@ -70,17 +80,17 @@ class SbpSignature():
         - sbp_parallel: SBP vector
     """
 
-    def __init__(self, placement: np.array, sbp_parallels: List[SbpParallel]) -> None:
+    def __init__(self, placement: Placement, sbp_parallels: List[SbpParallel]) -> None:
         self.placement = placement
         self.sbp_parallels = sbp_parallels
         assert len(placement.shape) == len(sbp_parallels)
 
     def get_total_cores(self):
-        return reduce(lambda x, y: x * y, self.placement)
+        return reduce(lambda x, y: x * y, self.placement.shape)
     
     def _get_sbp_size(self, sbp_type: int):
         total_size = 1
-        for dim_size, sbp_parallel in zip(self.placement, self.sbp_parallels):
+        for dim_size, sbp_parallel in zip(self.placement.shape, self.sbp_parallels):
             if sbp_parallel.type == sbp_type:
                 total_size *= dim_size
         return total_size
@@ -98,7 +108,7 @@ class SbpSignature():
         return [str(s) for s in self.sbp_parallels]
     
     def __repr__(self):
-        main_str = ",".join([f"{str(s)}: {p}" for p, s in zip(self.placement.shape, self.sbp_parallels)])
+        main_str = ", ".join([f"{str(s)}: {p}" for p, s in zip(self.placement.shape, self.sbp_parallels)])
         main_str = "Sbp Signature [" + main_str + "]"
         return main_str
 
@@ -111,11 +121,11 @@ def derive_output_sbp_signature(input_sbp_signatures: Dict[str, SbpSignature], r
         if first_placement.shape != placement_.shape:
             raise ValueError("Unmatched placement when deriving sbp signatures!")
     
-    lookup = {name: sbp.get_simplified_sbp_parallel_list() for name, sbp in input_sbp_signatures}
+    lookup = {name: sbp.get_simplified_sbp_parallel_list() for name, sbp in input_sbp_signatures.items()}
     lookup = pd.DataFrame(lookup)
     lookup_result = pd.merge(left=lookup, right=rule_table, how='left')  # nan occurs on invalid derivation
 
-    output_tensor_names = {name for name in rule_table.columns if name not in input_sbp_signatures}
+    output_tensor_names = {name for name in rule_table.columns if name not in input_sbp_signatures.items()}
     output_sbp_signatures = {}
     for name in output_tensor_names:
         try:
@@ -154,7 +164,9 @@ def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], out
     
     # The amount of inter-layer transmission is essentially one copy of the tensor
     # i.e. (S0, S1) -> (S0', S1')
-    # We take a coarse estimation of inter-layer bandwidth here
+    # We arrange both core arrays as square arrays, and take the bandwidth of intersected edge as ideal bandwidth
+    # This is theoretically the BOTTLENECK, since each noc channel (both intra-array and inter-array) 
+    # need to send ~ 1/sqrt(N) share of the whole tensor expectedly.
     output_split_size = output_sbp_signatures.get_split_size()
     if input_sbp_signature:
         input_split_size = input_sbp_signature.get_split_size()
@@ -180,10 +192,9 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     """Calculate communication cost for reducing partial to split/broadcast.
     """
     # check placement consistency
-    input_placement = input_sbp_signature.placement.reshape(-1)
-    output_placement = output_sbp_signature.placement.reshape(-1)
-    assert len(input_placement) == len(output_placement), "Different number of cores!"
-    assert input_placement == output_placement, "Permutation on placement!"
+    input_placement = input_sbp_signature.placement
+    output_placement = output_sbp_signature.placement
+    assert input_placement.shape == output_placement.shape, "Input and output have different placement!"
 
     # check partial dimensions
     partial_input_sbp_parallels = [x for x in input_sbp_signature.sbp_parallels if x.type == PARTIAL_SBP_PARALLEL]

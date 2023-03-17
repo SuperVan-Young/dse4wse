@@ -9,8 +9,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from utils import logger, TensorInfo
-from op_graph import OpGraph
-from build_op import build_operator
+from graph import OpGraph
+from op.build_op import build_operator
 
 MODEL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
 if not os.path.exists(MODEL_CACHE_DIR):

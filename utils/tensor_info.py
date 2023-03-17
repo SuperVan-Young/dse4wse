@@ -36,3 +36,28 @@ class TensorInfo():
     
     def numel(self):
         return reduce(lambda x, y: x * y, self.shape)
+    
+def multidirectional_broadcasting(A_shape: Tuple[int], B_shape: Tuple[int]) -> Tuple[int]:
+    """https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
+    """
+    C_shape = []
+
+    if len(A_shape) < len(B_shape):
+        A_shape = [1] * (len(B_shape) - len(A_shape)) + A_shape
+    elif len(A_shape) > len(B_shape):
+        B_shape = [1] * (len(A_shape) - len(B_shape)) + B_shape
+
+    for a, b in zip(A_shape, B_shape):
+        if a == b:
+            C_shape.append(a)
+        else:
+            assert a == 1 or b == 1
+            C_shape.append(max(a, b))
+    return C_shape
+
+if __name__ == "__main__":
+    print(multidirectional_broadcasting([2, 3, 4, 5], []))
+    print(multidirectional_broadcasting([2, 3, 4, 5], [5,]))
+    print(multidirectional_broadcasting([4, 5], [2, 3, 4, 5,]))
+    print(multidirectional_broadcasting([1, 4, 5], [2, 3, 1, 1,]))
+    print(multidirectional_broadcasting([3, 4, 5], [2, 1, 1, 1,]))
