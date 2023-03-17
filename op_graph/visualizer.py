@@ -13,7 +13,7 @@ def visualize_op_graph(op_graph: OpGraph):
         ], default=0) + 1
         op_graph.nodes[node]['_vis_depth'] = max_vis_depth
 
-    pos = nx.multipartite_layout(op_graph, '_vis_depth', align='horizontal', scale=1.5)
+    pos = nx.multipartite_layout(op_graph, '_vis_depth', align='horizontal', scale=3)
     
     plt.figure(figsize=(20, 20))
     nx.draw_networkx(op_graph, pos=pos, node_size=5, font_size=2, arrowsize=5, width=0.5)
