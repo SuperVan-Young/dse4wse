@@ -108,7 +108,7 @@ class SbpSignature():
         return [str(s) for s in self.sbp_parallels]
     
     def __repr__(self):
-        main_str = ",".join([f"{str(s)}: {p}" for p, s in zip(self.placement.shape, self.sbp_parallels)])
+        main_str = ", ".join([f"{str(s)}: {p}" for p, s in zip(self.placement.shape, self.sbp_parallels)])
         main_str = "Sbp Signature [" + main_str + "]"
         return main_str
 

@@ -85,13 +85,14 @@ class Operator(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig):
+    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
         """0 for enough memory, np.inf for invlaid memory
         """
+        # TODO: For now we don't consider storing grad
         raise NotImplementedError
     
     @abstractmethod
-    def _generate_candidate_sbp_signature():
+    def _generate_candidate_sbp_signatures(self) -> None:
         raise NotImplementedError
     
     @property
