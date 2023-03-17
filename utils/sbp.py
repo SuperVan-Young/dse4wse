@@ -196,50 +196,38 @@ def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_s
     output_placement = output_sbp_signature.placement
     assert input_placement.shape == output_placement.shape, "Input and output have different placement!"
 
-    # check partial dimensions
+    # Currently, we only adopt P -> B, and leave P -> S for future implementation.
+    for input_sbp_parallel, output_sbp_parallel in zip(
+        input_sbp_signature.get_simplified_sbp_parallel_list(), 
+        output_sbp_signature.get_simplified_sbp_parallel_list()):
+        if input_sbp_parallel != output_sbp_parallel:
+            assert input_sbp_parallel == 'P' and output_sbp_parallel == "B"
+
+    # check partial dimensions number
     partial_input_sbp_parallels = [x for x in input_sbp_signature.sbp_parallels if x.type == PARTIAL_SBP_PARALLEL]
     num_partial_dims = len(partial_input_sbp_parallels)
     assert num_partial_dims <= 1, "Currently we don't support >= 1 partial sum dimension."
     if num_partial_dims == 0:
         return 0
     
-    # calculate block size / cluster size for each dimension
-    block_sizes = []
-    cur_block_size = tensor_info.numel()
-    for dim_size, sbp_parallel in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels):
-        if sbp_parallel.type == SPLIT_SBP_PARALLEL:
-            cur_block_size /= dim_size
-        block_sizes.append(cur_block_size)
-    
-    # calculate cluster size for each dimension
-    total_core = input_sbp_signature.get_total_cores()
-    cluster_sizes = []
-    cur_cluster_number = 1
-    for dim_size in input_sbp_signature.placement.shape:
-        cluster_sizes.append(total_core / cur_cluster_number)
-        cur_cluster_number *= dim_size
+    split_size = input_sbp_signature.get_split_size()
+    broadcast_size = input_sbp_signature.get_broadcast_size()
+    partial_size = input_sbp_signature.get_partial_size()
+
+    num_cluster = partial_size
+    cluster_size = broadcast_size * split_size
 
     # The amount of transmission within a group of devices can be pre-determined.
-    # Currently, we only adopt P -> B, and leave P -> S for future implementation.
-    # The cost is 2(p - 1) * |T|, which assumes that block size is divisible by p.
-    # This assumption usually holds true, and should work fine for coarse modeling.
-    for input_sbp_parallel, output_sbp_parallel in zip(
-        input_sbp_signature.get_simplified_sbp_parallel_list(), 
-        output_sbp_signature.get_simplified_sbp_parallel_list()):
-        if input_sbp_parallel != output_sbp_parallel:
-            assert input_sbp_parallel == 'P' and output_sbp_parallel == "B"
-    total_transmission = 0
-    for dim_size, sbp_parallel, block_size in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels, block_sizes):
-        if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
-            total_transmission = 2 * (dim_size - 1) * block_size * tensor_info.dtype_size
+    # The cost is 2(p - 1) * |T|, 
+    # where |T| is the amount of partial sum on one device cluster.
+    # p is the number of device clusters.
+    # We collectively consider all other non-partial dimensions
+    total_transmission = 2 * (num_cluster - 1) * (tensor_info.numel() * tensor_info.dtype_size * broadcast_size)
 
     # The bandwidth cannot be properly determined before placement & routing
     # For ring-based all-reduce, total_bandwidth = p * inter_cluster_bandwidth.
-    # Inter_cluster_bandwidth is optimisitally set with #cluster_core * #NoC_bw.
-    total_bandwidth = 0
+    # Inter_cluster_bandwidth is expected to be sqrt(#Cluster_size) * #NoC_bandwidth
     noc_bandwidth = arch_config.get_interconnect_bandwidth()
-    for dim_size, sbp_parallel, cluster_size in zip(input_sbp_signature.placement.shape, input_sbp_signature.sbp_parallels, cluster_sizes):
-        if sbp_parallel.type == PARTIAL_SBP_PARALLEL:
-            total_bandwidth = dim_size * cluster_size * noc_bandwidth
+    total_bandwidth = num_cluster * sqrt(cluster_size) * noc_bandwidth
 
-    return total_transmission / total_bandwidth
+    return total_transmission // total_bandwidth

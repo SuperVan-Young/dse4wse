@@ -41,5 +41,5 @@ def init_logger(name="DSE4WSE", level="INFO", stream=True, logdir=None,
     if logfile is not None:
         logger.info(f"Logfile {logfile}")
 
-init_logger(name="DSE4WSE", level="DEBUG", stream=True, logdir=None, 
+init_logger(name="DSE4WSE", level="DEBUG", stream=True, logdir='log', 
             fmt=DEFAULT_FORMAT, force_init=True)

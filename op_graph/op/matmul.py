@@ -170,14 +170,14 @@ if __name__ == "__main__":
             'test_A'
         ),
         'B': TensorInfo(
-            (768, 1024),
+            (768, 768),
             1,
             'test_B'
         ),
     }
     output_tensors = {
         'Y': TensorInfo(
-            (1, 12, 512, 1024),
+            (1, 12, 512, 768),
             1,
             'test_Y'
         )
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         input_tensors=input_tensors,
         output_tensors=output_tensors
     )
-    matmul_op.num_core_range = list(range(1, 4096 + 1))
+    matmul_op.num_core_range = list(range(1024, 4096 + 1))
     matmul_op.generate_candidate_sbp_signatures()
 
     arch_config = ArchConfig({
