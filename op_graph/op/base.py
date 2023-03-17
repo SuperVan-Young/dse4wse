@@ -57,6 +57,12 @@ class Operator(ABC):
             comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
                                                              arch_config=arch_config, tensor_info=tensor_info)
         
+        logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
+        logger.debug(f"input comm cost : {comm_input_cost:>20}")
+        logger.debug(f"Compute cost    : {compute_cost:>20}")
+        logger.debug(f"Reduce comm cost: {comm_reduce_cost:>20}")
+        logger.debug(f"Memory cost     : {memory_cost:>20}")
+
         return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
 
     def generate_candidate_sbp_signatures(self):
@@ -68,16 +74,22 @@ class Operator(ABC):
     def find_best_sbp_signature(self, arch_config: ArchConfig, inter_layer_sbp_signatures: Dict[str, SbpSignature] = {}
                                 ) -> Dict[str, SbpSignature]:
         assert self._candidate_sbp_signatures, "Derive candidate sbp signatures first!"
+        best_cost = np.inf
+        best_sbp_signatures = None
 
         logger.debug(f"Candidate sbp signatures for {self.__class__}: {self.name}")
-        costs = [self.estimate_cost(sbp, arch_config, inter_layer_sbp_signatures)
-                 for sbp in self._candidate_sbp_signatures]
-        for sbp,cost in zip(self._candidate_sbp_signatures, costs):
-            logger.debug(f"cost = {cost}, for {sbp}")
-        if min(costs) == np.inf:
+        for idx, sbp in enumerate(self._candidate_sbp_signatures):
+            cost = self.estimate_cost(sbp, arch_config, inter_layer_sbp_signatures)
+            if cost != np.inf:
+                logger.debug(f"Cost = {int(cost):>10d}, for {idx}-th {sbp}")
+            if cost < best_cost:
+                best_cost = cost
+                best_sbp_signatures = sbp 
+
+        if best_sbp_signatures is None: 
             raise RuntimeError(f"Cannot find valid sbp signature!")
-        best_sbp_signatures = self._candidate_sbp_signatures[np.argmin(costs)]
         logger.debug(f"Best sbp signature: {best_sbp_signatures}")
+        logger.debug(f"Best Cost: {int(best_cost):>10d}")
 
         for t in chain(self.input_tensors.keys(), self.output_tensors.keys()):
             if t not in best_sbp_signatures:

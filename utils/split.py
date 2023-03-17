@@ -16,7 +16,7 @@ def factoring(num: int, upper_bound:int = None) -> List:
         upper_bound = num
 
     factors = set()
-    for i in range(1, int(sqrt(num))):
+    for i in range(1, int(sqrt(num)) + 1):
         if num % i == 0:
             if i <= upper_bound: factors.add(i)
             if num // i <= upper_bound: factors.add(num // i)

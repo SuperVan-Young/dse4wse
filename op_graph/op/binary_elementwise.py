@@ -78,13 +78,11 @@ class BinaryElementwiseOperator(Operator):
                 )
                 def get_input_sbp_parallel(tensor_info, dim, offset):
                     dim_ = dim - offset
-                    if dim_ < 0:
-                        return BroadcastSbpParallel()
+                    if dim_ >= 0 and tensor_info.shape[dim_] != 1:
+                        return SplitSbpParallel(dim_)
                     else:
-                        if tensor_info.shape[dim_] == 1:
-                            return BroadcastSbpParallel()
-                        else:
-                            return SplitSbpParallel(dim_)
+                        return BroadcastSbpParallel()
+
                 A_sbp_sig = SbpSignature(
                     placement,
                     [get_input_sbp_parallel(A_info, dim, A_offset) for dim in dims]
@@ -123,9 +121,9 @@ class BinaryElementwiseOperator(Operator):
             A_dim, B_dim = dim - A_offset, dim - B_offset
             A_can_split = (A_dim >= 0 and A_info.shape[A_dim] > 1)
             B_can_split = (B_dim >= 0 and B_info.shape[B_dim] > 1)
+            if A_can_split and B_can_split:
+                insert_rule(f"S({A_dim})", f"S({B_dim})", f"S({dim})")
             if A_can_split:
-                if B_can_split:
-                    insert_rule(f"S({A_dim})", f"S({B_dim})", f"S({dim})")
                 insert_rule(f"S({A_dim})", "B", f"S({dim})")
             if B_can_split:
                 insert_rule("B", f"S({B_dim})", f"S({dim})")
