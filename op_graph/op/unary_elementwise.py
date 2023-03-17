@@ -44,8 +44,8 @@ class UnaryElementwiseOperator(Operator):
     def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig):
         in_info, out_info = self.input_tensors['in'], self.output_tensors['out']
         in_sbp_sig, out_sbp_sig = sbp_signatures['in'], sbp_signatures['out']
-        used_memory = in_info.numel() * in_info.dtype_size * in_sbp_sig.get_broadcast_size() * in_sbp_sig.get_partial_size() / in_sbp_sig.get_split_size() \
-                    + out_info.numel() * out_info.dtype_size * out_sbp_sig.get_broadcast_size() * out_sbp_sig.get_partial_size() / out_sbp_sig.get_split_size()
+        used_memory = in_info.numel() * in_info.dtype_size / in_sbp_sig.get_split_size() \
+                    + out_info.numel() * out_info.dtype_size / out_sbp_sig.get_split_size()
         actual_memory = arch_config.get_memory_size()
 
         return 0 if used_memory < actual_memory else np.inf
@@ -111,7 +111,6 @@ if __name__ == "__main__":
     )
     unary_op.num_core_range = list(range(1, 1025))
     unary_op.generate_candidate_sbp_signatures()
-    print(unary_op._candidate_sbp_signatures)
 
     arch_config = ArchConfig({
         'core_num_mac': 32,
@@ -128,4 +127,3 @@ if __name__ == "__main__":
         'inter_wafer_bandwidth': 256,
     })
     best_sbp = unary_op.find_best_sbp_signature(arch_config=arch_config)
-    print(best_sbp)

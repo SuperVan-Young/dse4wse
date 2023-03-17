@@ -69,11 +69,15 @@ class Operator(ABC):
                                 ) -> Dict[str, SbpSignature]:
         assert self._candidate_sbp_signatures, "Derive candidate sbp signatures first!"
 
+        logger.debug(f"Candidate sbp signatures for {self.__class__}: {self.name}")
         costs = [self.estimate_cost(sbp, arch_config, inter_layer_sbp_signatures)
                  for sbp in self._candidate_sbp_signatures]
+        for sbp,cost in zip(self._candidate_sbp_signatures, costs):
+            logger.debug(f"cost = {cost}, for {sbp}")
         if min(costs) == np.inf:
             raise RuntimeError(f"Cannot find valid sbp signature!")
         best_sbp_signatures = self._candidate_sbp_signatures[np.argmin(costs)]
+        logger.debug(f"Best sbp signature: {best_sbp_signatures}")
 
         for t in chain(self.input_tensors.keys(), self.output_tensors.keys()):
             if t not in best_sbp_signatures:
