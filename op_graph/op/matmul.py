@@ -49,16 +49,14 @@ class MatMulOperator(Operator):
         total_cycles = total_operation / actual_intensity
         return total_cycles
 
-    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
+    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature]) -> float:
         A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
         A_sbp_sig, B_sbp_sig = sbp_signatures['A'], sbp_signatures['B']
         Y_sbp_sig_wo_reduce = derive_output_sbp_signature({'A': A_sbp_sig, 'B': B_sbp_sig}, self._rule_table)['Y']
         used_memory = A_info.numel() * A_info.dtype_size / A_sbp_sig.get_split_size() \
                     + B_info.numel() * B_info.dtype_size / B_sbp_sig.get_split_size() \
                     + Y_info.numel() * Y_info.dtype_size / Y_sbp_sig_wo_reduce.get_split_size()
-        actual_memory = arch_config.get_memory_size()
-
-        return 0 if used_memory < actual_memory else np.inf
+        return used_memory
 
     def _generate_candidate_sbp_signatures(self) -> None:
         candidate_sbp_signatures = []

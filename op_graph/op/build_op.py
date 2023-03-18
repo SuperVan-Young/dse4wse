@@ -21,11 +21,11 @@ def build_operator(name: str, op_type: str,
     if op_type == 'Log':
         input_tensors = {'in': input_tensors[0]}
         output_tensors = {'out': output_tensors[0]}
-        op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, operation_intensity=1)
+        op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, mac_per_element=1)
     elif op_type == 'Sqrt':
         input_tensors = {'in': input_tensors[0]}
         output_tensors = {'out': output_tensors[0]}
-        op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, operation_intensity=10)
+        op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, mac_per_element=10)
     
     # Binary Elementwise Operators
     elif op_type in ['Add', 'Sub', 'Mul', 'Div', 'Pow']:
@@ -35,7 +35,7 @@ def build_operator(name: str, op_type: str,
         }
         output_tensors = {'out': output_tensors[0]}
         #TODO: measure realy operation intensity
-        op = BinaryElementwiseOperator(name, op_type, input_tensors, output_tensors, operation_intensity=1)
+        op = BinaryElementwiseOperator(name, op_type, input_tensors, output_tensors, mac_per_element=1)
 
     # MatMul
     elif op_type in ['MatMul']:

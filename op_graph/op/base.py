@@ -125,31 +125,32 @@ class Operator(ABC):
                 raise ValueError(f"{t} not in SBP signatures")
         return best_sbp_signatures
     
-    def get_mac_count(self, input_tensors: Union[None, Dict[str, SbpSignature]] = None):
+    def get_mac_count(self, input_tensors: Union[None, Dict[str, TensorInfo]] = None):
         if input_tensors is None:
             input_tensors = self.input_tensors
         return self._get_mac_count(input_tensors)
     
-    def get_mem_ref_count(self, input_tensors: Union[None, Dict[str, SbpSignature]] = None):
+    def get_mem_ref_count(self, input_tensors: Union[None, Dict[str, TensorInfo]] = None):
         if input_tensors is None:
             input_tensors = self.input_tensors
         return self._get_mem_ref_count(input_tensors)
     
-    def get_mem_utilization(self, input_tensors: Union[None, Dict[str, SbpSignature]] = None):
+    def get_mem_utilization(self, input_tensors: Union[None, Dict[str, TensorInfo]] = None, **kwargs):
+        # TODO: in the future, consider training memory utilization
         if input_tensors is None:
             input_tensors = self.input_tensors
         return self._get_mem_utilization(input_tensors)
     
     @abstractmethod
-    def _get_mac_count(self, input_tensors: Dict[str, SbpSignature]):
+    def _get_mac_count(self, input_tensors: Dict[str, TensorInfo]):
         raise NotImplementedError
     
     @abstractmethod
-    def _get_mem_ref_count(self, input_tensors: Dict[str, SbpSignature]):
+    def _get_mem_ref_count(self, input_tensors: Dict[str, TensorInfo]):
         raise NotImplementedError
     
     @abstractmethod
-    def _get_mem_utilization(self, input_tensors: Dict[str, SbpSignature]):
+    def _get_mem_utilization(self, input_tensors: Dict[str, TensorInfo]):
         raise NotImplementedError
     
     @abstractmethod
