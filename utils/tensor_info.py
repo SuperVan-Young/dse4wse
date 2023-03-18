@@ -45,6 +45,7 @@ class TensorInfo():
 def multidirectional_broadcasting(A_shape: Tuple[int], B_shape: Tuple[int]) -> Tuple[int]:
     """https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
     """
+    A_shape, B_shape = list(A_shape), list(B_shape)
     C_shape = []
 
     if len(A_shape) < len(B_shape):

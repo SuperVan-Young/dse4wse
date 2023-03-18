@@ -53,11 +53,11 @@ class BinaryElementwiseOperator(Operator):
             return reduce(lambda x, y: x * y, s)
 
         def get_input_sbp_parallel(tensor_info, dim, offset):
-                        dim_ = dim - offset
-                        if dim_ >= 0 and tensor_info.shape[dim_] != 1:
-                            return SplitSbpParallel(dim_)
-                        else:
-                            return BroadcastSbpParallel()
+            dim_ = dim - offset
+            if dim_ >= 0 and tensor_info.shape[dim_] != 1:
+                return SplitSbpParallel(dim_)
+            else:
+                return BroadcastSbpParallel()
 
         for array_dim in [1, 2]:
             for dims in combinations(list(range(out_shape_dims)), array_dim):

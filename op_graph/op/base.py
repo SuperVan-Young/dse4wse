@@ -57,11 +57,11 @@ class Operator(ABC):
             comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
                                                              arch_config=arch_config, tensor_info=tensor_info)
         
-        # logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
-        # logger.debug(f"input comm cost : {comm_input_cost:>20}")
-        # logger.debug(f"Compute cost    : {compute_cost:>20}")
-        # logger.debug(f"Reduce comm cost: {comm_reduce_cost:>20}")
-        # logger.debug(f"Memory cost     : {memory_cost:>20}")
+        logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
+        logger.debug(f"input comm cost : {comm_input_cost:>20}")
+        logger.debug(f"Compute cost    : {compute_cost:>20}")
+        logger.debug(f"Reduce comm cost: {comm_reduce_cost:>20}")
+        logger.debug(f"Memory cost     : {memory_cost:>20}")
 
         return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
     

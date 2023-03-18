@@ -13,6 +13,11 @@ def visualize_op_graph(op_graph: OpGraph):
         ], default=0) + 1
         op_graph.nodes[node]['_vis_depth'] = max_vis_depth
 
+    for node in op_graph.nodes():
+        original_depth = op_graph.nodes[node]['_vis_depth']
+        op_graph.nodes[node]['_vis_depth'] = min([op_graph.nodes[succ]['_vis_depth']
+            for succ in op_graph.successors(node)], default=original_depth) - 1
+
     pos = nx.multipartite_layout(op_graph, '_vis_depth', align='horizontal', scale=3)
     
     plt.figure(figsize=(20, 20))

@@ -18,11 +18,11 @@ def build_operator(name: str, op_type: str,
                    output_tensors: List[TensorInfo]) -> Operator:
     
     # Unary Elementwise Operators
-    if op_type == 'Log':
+    if op_type in ['Log']:
         input_tensors = {'in': input_tensors[0]}
         output_tensors = {'out': output_tensors[0]}
         op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, mac_per_element=1)
-    elif op_type == 'Sqrt':
+    elif op_type in ['Sqrt']:
         input_tensors = {'in': input_tensors[0]}
         output_tensors = {'out': output_tensors[0]}
         op = UnaryElementwiseOperator(name, op_type, input_tensors, output_tensors, mac_per_element=10)
