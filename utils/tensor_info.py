@@ -7,11 +7,11 @@ from onnx.mapping import TENSOR_TYPE_MAP
 
 def onnx_dtype_2_storage_size(dtype: int) -> int:
     name = TENSOR_TYPE_MAP[dtype].name
-    size_pattern = re.compile(r"^TensorProto\.[A-Z](\d+)$")
+    size_pattern = re.compile(r"^TensorProto\.[A-Z]+(\d+)$")
 
     size_match = size_pattern.match(name)
     if size_match:
-        size = size_match.group(1) // 4
+        size = int(size_match.group(1)) // 4
         return size
     else:
         if name == "TensorProto.FLOAT":
@@ -62,6 +62,8 @@ def multidirectional_broadcasting(A_shape: Tuple[int], B_shape: Tuple[int]) -> T
     return C_shape
 
 if __name__ == "__main__":
+    print(onnx_dtype_2_storage_size(0))
+
     print(multidirectional_broadcasting([2, 3, 4, 5], []))
     print(multidirectional_broadcasting([2, 3, 4, 5], [5,]))
     print(multidirectional_broadcasting([4, 5], [2, 3, 4, 5,]))

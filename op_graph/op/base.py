@@ -58,10 +58,10 @@ class Operator(ABC):
                                                              arch_config=arch_config, tensor_info=tensor_info)
         
         logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
-        logger.debug(f"input comm cost : {comm_input_cost:>20}")
-        logger.debug(f"Compute cost    : {compute_cost:>20}")
-        logger.debug(f"Reduce comm cost: {comm_reduce_cost:>20}")
-        logger.debug(f"Memory cost     : {memory_cost:>20}")
+        logger.debug(f"input comm cost : {int(comm_input_cost):>20}")
+        logger.debug(f"Compute cost    : {int(compute_cost):>20}")
+        logger.debug(f"Reduce comm cost: {int(comm_reduce_cost):>20}")
+        logger.debug(f"Memory cost     : {(0 if memory_cost == 0 else 'INF'):>20}")
 
         return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
     
@@ -79,9 +79,13 @@ class Operator(ABC):
         maximum_intensity = compute_power / memory_bandwidth     # mac / byte
 
         if operational_intensity < maximum_intensity:
-            available_compute_power = memory_bandwidth * operational_intensity
+            available_compute_power = memory_bandwidth * operational_intensity  # memory bounded
         else:
-            available_compute_power = compute_power
+            available_compute_power = compute_power  # compute bounded
+
+        logger.debug(f"MAC count: {mac_count}")
+        logger.debug(f"operational intensity: {operational_intensity}")
+        logger.debug(f"maximum intensity: {maximum_intensity}")
 
         total_cycles = mac_count / available_compute_power
         return total_cycles

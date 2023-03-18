@@ -15,8 +15,13 @@ from utils import (
 )
 
 class MatMulOperator(Operator):
-    def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo], *args, **kwargs) -> None:
+    def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo],
+                 M_block_size=1, K_block_size=1, N_block_size=1,  *args, **kwargs) -> None:
         super().__init__(name, op_type, input_tensors, output_tensors, *args, **kwargs)
+        # assuming some lower-level memory hierarchy below SRAM, for comparing GPU and WSE
+        self.M_block_size = M_block_size
+        self.K_block_size = K_block_size
+        self.N_block_size = N_block_size
         assert len(input_tensors) == 2
         assert len(output_tensors) == 1
         assert 'A' in input_tensors
@@ -37,9 +42,10 @@ class MatMulOperator(Operator):
         M_dim_value, K_dim_value, N_dim_value = A_info.shape[-2], A_info.shape[-1], B_info.shape[-1]
 
         # assume no inner blocking
-        A_ref_count = B_ref_count = M_dim_value * K_dim_value * N_dim_value
-        Y_ref_count = M_dim_value * N_dim_value
-        total_ref_count = reduce(lambda x, y: x * y, stack_shape) * (A_ref_count + B_ref_count + Y_ref_count)
+        A_ref_count = M_dim_value * K_dim_value * N_dim_value // self.N_block_size
+        B_ref_count = M_dim_value * K_dim_value * N_dim_value // self.M_block_size
+        Y_ref_count = M_dim_value * N_dim_value // self.K_block_size
+        total_ref_count = reduce(lambda x, y: x * y, stack_shape, 1) * (A_ref_count + B_ref_count + Y_ref_count)
 
         return total_ref_count
 
