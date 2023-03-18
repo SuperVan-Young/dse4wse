@@ -23,4 +23,5 @@ from tensor_info import (
 from split import (
     factoring,
     get_max_factor,
+    get_split_tensor_info
 )

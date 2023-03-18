@@ -41,9 +41,9 @@ class ArchConfig(UserDict):
         return self.data['core_buffer_width']
     
     def get_memory_size(self) -> int:
-        """In terms of Byte.
+        """Single core SRAM size, in terms of Byte.
         """
-        return self.data['core_buffer_width'] * self.data['core_buffer_size']
+        return self.data['core_buffer_size']
     
     def get_interconnect_bandwidth(self, connect_type='noc'):
         """In terms of Byte/Cycle
@@ -56,6 +56,15 @@ class ArchConfig(UserDict):
             return self.data['inter_wafer_bandwidth']
         else:
             raise NotImplementedError
+        
+    def get_total_cores(self) -> int:
+        total_cores = reduce(lambda x, y: x * y, [
+            self.data['reticle_array_height'],
+            self.data['reticle_array_width'],
+            self.data['core_array_height'],
+            self.data['core_array_width'],
+        ])
+        return total_cores
     
 if __name__ == "__main__":
     # Here's an example configuration for our WSE

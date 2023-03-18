@@ -37,6 +37,11 @@ class TensorInfo():
     def numel(self):
         return reduce(lambda x, y: x * y, self.shape)
     
+    def size(self):
+        """In Byte
+        """
+        return self.numel() * self.dtype_size
+    
 def multidirectional_broadcasting(A_shape: Tuple[int], B_shape: Tuple[int]) -> Tuple[int]:
     """https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md
     """
