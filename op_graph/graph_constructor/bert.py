@@ -21,7 +21,7 @@ class BertOpGraphConstructor(OpGraphConstructor):
 
     @property
     def _graph_name(self):
-        return "Bert - batch=%s - seq=%s" % (self.batch_size, self.max_seq_len)
+        return "Bert batch=%s seq=%s" % (self.batch_size, self.max_seq_len)
 
     def _get_onnx_model(self):
         model_path = os.path.join(MODEL_CACHE_DIR, f"bert_b{self.batch_size}_l{self.max_seq_len}.onnx")
