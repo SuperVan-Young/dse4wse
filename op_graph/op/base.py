@@ -5,13 +5,13 @@ import pandas as pd
 import numpy as np
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple, Container
+from typing import Dict, List, Tuple, Container, Union
 from itertools import chain
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utils import (
     ArchConfig, SbpSignature, TensorInfo, calc_comm_cost_for_input, calc_comm_cost_for_reduction,
-    derive_output_sbp_signature, derive_reduced_sbp_signatures, logger
+    derive_output_sbp_signature, derive_reduced_sbp_signatures, logger, get_split_tensor_info
 )
 
 class Operator(ABC):
@@ -44,13 +44,13 @@ class Operator(ABC):
                 comm_input_cost += calc_comm_cost_for_input(previous_sbp_signatures, current_sbp_signature, 
                                                             arch_config=arch_config, tensor_info=tensor_info)
 
-        compute_cost = self._estimate_compute_cost(sbp_signatures, arch_config)
-        memory_cost = self._estimate_memory_cost(sbp_signatures, arch_config)
+        compute_cost = self.estimate_compute_cost(sbp_signatures, arch_config)
 
-        input_sbp_signatures = {name: sbp for name, sbp in sbp_signatures.items() if name in self.input_tensors}
-        output_sbp_signatures = derive_output_sbp_signature(input_sbp_signatures, self._rule_table)
+        memory_cost = self.estimate_memory_cost(sbp_signatures, arch_config)
 
         comm_reduce_cost = 0
+        input_sbp_signatures = {name: sbp for name, sbp in sbp_signatures.items() if name in self.input_tensors}
+        output_sbp_signatures = derive_output_sbp_signature(input_sbp_signatures, self._rule_table)
         for param_name, tensor_info in self.output_tensors.items():
             previous_sbp_signature = output_sbp_signatures[param_name]
             current_sbp_signature = sbp_signatures[param_name]
@@ -58,12 +58,45 @@ class Operator(ABC):
                                                              arch_config=arch_config, tensor_info=tensor_info)
         
         logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
-        logger.debug(f"input comm cost : {comm_input_cost:>20}")
-        logger.debug(f"Compute cost    : {compute_cost:>20}")
-        logger.debug(f"Reduce comm cost: {comm_reduce_cost:>20}")
-        logger.debug(f"Memory cost     : {memory_cost:>20}")
+        logger.debug(f"input comm cost : {int(comm_input_cost):>20}")
+        logger.debug(f"Compute cost    : {int(compute_cost):>20}")
+        logger.debug(f"Reduce comm cost: {int(comm_reduce_cost):>20}")
+        logger.debug(f"Memory cost     : {(0 if memory_cost == 0 else 'INF'):>20}")
 
         return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
+    
+    def estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
+        """Estimate execution latency with roofline model.
+        """
+        input_tensors = {name: get_split_tensor_info(tensor_info, sbp_signatures[name])
+                         for name, tensor_info in self.input_tensors.items()}
+        mac_count = self.get_mac_count(input_tensors)            # mac
+        mem_ref_count = self.get_mem_ref_count(input_tensors)    # byte
+        operational_intensity = mac_count / mem_ref_count        # mac / byte
+
+        compute_power = arch_config.get_compute_power()          # mac / cycle
+        memory_bandwidth = arch_config.get_memory_bandwidth()    # byte / cycle
+        maximum_intensity = compute_power / memory_bandwidth     # mac / byte
+
+        if operational_intensity < maximum_intensity:
+            available_compute_power = memory_bandwidth * operational_intensity  # memory bounded
+        else:
+            available_compute_power = compute_power  # compute bounded
+
+        logger.debug(f"MAC count: {mac_count}")
+        logger.debug(f"operational intensity: {operational_intensity}")
+        logger.debug(f"maximum intensity: {maximum_intensity}")
+
+        total_cycles = mac_count / available_compute_power
+        return total_cycles
+
+    def estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
+        input_tensors = {name: get_split_tensor_info(tensor_info, sbp_signatures[name])
+                         for name, tensor_info in self.input_tensors.items()}
+        mem_utilization = self.get_mem_utilization(input_tensors)
+        available_memory = arch_config.get_memory_size()
+
+        return 0 if mem_utilization <= available_memory else np.inf
 
     def generate_candidate_sbp_signatures(self):
         assert self.num_core_range != None
@@ -96,17 +129,32 @@ class Operator(ABC):
                 raise ValueError(f"{t} not in SBP signatures")
         return best_sbp_signatures
     
+    def get_mac_count(self, input_tensors: Union[None, Dict[str, TensorInfo]] = None):
+        if input_tensors is None:
+            input_tensors = self.input_tensors
+        return self._get_mac_count(input_tensors)
+    
+    def get_mem_ref_count(self, input_tensors: Union[None, Dict[str, TensorInfo]] = None):
+        if input_tensors is None:
+            input_tensors = self.input_tensors
+        return self._get_mem_ref_count(input_tensors)
+    
+    def get_mem_utilization(self, input_tensors: Union[None, Dict[str, TensorInfo]] = None, **kwargs):
+        # TODO: in the future, consider training memory utilization
+        if input_tensors is None:
+            input_tensors = self.input_tensors
+        return self._get_mem_utilization(input_tensors)
+    
     @abstractmethod
-    def _estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        """We use roofline model to estimate actual computation cost.
-        """
+    def _get_mac_count(self, input_tensors: Dict[str, TensorInfo]):
         raise NotImplementedError
     
     @abstractmethod
-    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        """0 for enough memory, np.inf for invlaid memory
-        """
-        # TODO: For now we don't consider storing grad
+    def _get_mem_ref_count(self, input_tensors: Dict[str, TensorInfo]):
+        raise NotImplementedError
+    
+    @abstractmethod
+    def _get_mem_utilization(self, input_tensors: Dict[str, TensorInfo]):
         raise NotImplementedError
     
     @abstractmethod

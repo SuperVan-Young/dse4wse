@@ -15,41 +15,28 @@ from utils import (
 
 class UnaryElementwiseOperator(Operator):
     def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo], 
-                 operation_intensity=1, *args, **kwargs) -> None:
+                 mac_per_element=1, *args, **kwargs) -> None:
         super().__init__(name, op_type, input_tensors, output_tensors, *args, **kwargs)
-        self.operation_intensity = operation_intensity  # operation / element
+        self.mac_per_element = mac_per_element  # operation / element
         assert len(input_tensors) == 1, input_tensors
         assert len(output_tensors) == 1, output_tensors
         assert "in" in input_tensors
         assert "out" in output_tensors
-
-    def _estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        tensor_info = self.input_tensors['in']
-        sbp_signature = sbp_signatures['in']
-        assert sbp_signature.get_partial_size() == 1
-        input_numel = tensor_info.numel() * sbp_signature.get_broadcast_size() // sbp_signature.get_split_size()
-        total_operation = input_numel * self.operation_intensity
-
-        compute_power = arch_config.get_compute_power()  # operation/cycle
-        memory_bandwidth = arch_config.get_memory_bandwidth() // tensor_info.dtype_size  # element/cycle
-        maximum_intensity = compute_power / memory_bandwidth  # operation/element
-
-        if self.operation_intensity < maximum_intensity:
-            actual_intensity = memory_bandwidth * self.operation_intensity
-        else:
-            actual_intensity = compute_power
-        total_cycles = total_operation / actual_intensity
-        return total_cycles
     
-    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig):
-        in_info, out_info = self.input_tensors['in'], self.output_tensors['out']
-        in_sbp_sig, out_sbp_sig = sbp_signatures['in'], sbp_signatures['out']
-        used_memory = in_info.numel() * in_info.dtype_size / in_sbp_sig.get_split_size() \
-                    + out_info.numel() * out_info.dtype_size / out_sbp_sig.get_split_size()
-        actual_memory = arch_config.get_memory_size()
-
-        return 0 if used_memory < actual_memory else np.inf
+    def _get_mac_count(self, input_tensors: Dict[str, TensorInfo]):
+        in_info = input_tensors['in']
+        return in_info.numel() * self.mac_per_element
     
+    def _get_mem_ref_count(self, input_tensors: Dict[str, TensorInfo]):
+        in_info = input_tensors['in']
+        in_size = in_info.size()
+        return in_size * 2  # read in, write out
+
+    def _get_mem_utilization(self, input_tensors: Dict[str, TensorInfo]):
+        in_info = input_tensors['in']
+        in_size = in_info.size()
+        return in_size  # only save one copy!
+
     def _generate_candidate_sbp_signatures(self):
         tensor_info = self.input_tensors['in']
         candidate_sbp_signatures = []

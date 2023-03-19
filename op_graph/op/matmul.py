@@ -10,12 +10,18 @@ from functools import reduce
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from base import Operator
 from utils import (
-    ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, BroadcastSbpParallel, derive_output_sbp_signature
+    ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, 
+    BroadcastSbpParallel, multidirectional_broadcasting, logger
 )
 
 class MatMulOperator(Operator):
-    def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo], *args, **kwargs) -> None:
+    def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo],
+                 M_block_size=1, K_block_size=1, N_block_size=1,  *args, **kwargs) -> None:
         super().__init__(name, op_type, input_tensors, output_tensors, *args, **kwargs)
+        # assuming some lower-level memory hierarchy below SRAM, for comparing GPU and WSE
+        self.M_block_size = M_block_size
+        self.K_block_size = K_block_size
+        self.N_block_size = N_block_size
         assert len(input_tensors) == 2
         assert len(output_tensors) == 1
         assert 'A' in input_tensors
@@ -24,41 +30,36 @@ class MatMulOperator(Operator):
         assert len(input_tensors['A'].shape) > 1, "Currently not support VxM"
         assert len(input_tensors['B'].shape) > 1, "Currently not support MxV"
 
-    def _estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
-        A_sbp_sig, B_sbp_sig = sbp_signatures['A'], sbp_signatures['B']
-        Y_sbp_sig_wo_reduce = derive_output_sbp_signature({'A': A_sbp_sig, 'B': B_sbp_sig}, self._rule_table)['Y']
+    def _get_mac_count(self, input_tensors: Dict[str, TensorInfo]):
+        A_info, B_info = input_tensors['A'], input_tensors['B']
+        stack_shape = multidirectional_broadcasting(A_info.shape[:-2], B_info.shape[:-2])
+        M_dim_value, K_dim_value, N_dim_value = A_info.shape[-2], A_info.shape[-1], B_info.shape[-1]
+        return reduce(lambda x, y: x * y, stack_shape + [M_dim_value, K_dim_value, N_dim_value])
+    
+    def _get_mem_ref_count(self, input_tensors: Dict[str, TensorInfo]):
+        A_info, B_info = input_tensors['A'], input_tensors['B']
+        stack_shape = multidirectional_broadcasting(A_info.shape[:-2], B_info.shape[:-2])
+        M_dim_value, K_dim_value, N_dim_value = A_info.shape[-2], A_info.shape[-1], B_info.shape[-1]
 
-        reduce_dim_value = A_info.shape[-1]
-        assert Y_sbp_sig_wo_reduce.get_broadcast_size() == 1
-        total_operation = Y_info.numel() * reduce_dim_value // Y_sbp_sig_wo_reduce.get_partial_size() // Y_sbp_sig_wo_reduce.get_split_size()
+        # assume no inner blocking
+        A_ref_count = M_dim_value * K_dim_value * N_dim_value // self.N_block_size
+        B_ref_count = M_dim_value * K_dim_value * N_dim_value // self.M_block_size
+        Y_ref_count = M_dim_value * N_dim_value // self.K_block_size
+        total_ref_count = reduce(lambda x, y: x * y, stack_shape, 1) * (A_ref_count + B_ref_count + Y_ref_count)
 
-        total_memory_reference = A_info.numel() // A_sbp_sig.get_split_size() \
-                               + B_info.numel() // B_sbp_sig.get_split_size()
+        return total_ref_count
+
+    def _get_mem_utilization(self, input_tensors: Dict[str, TensorInfo]):
+        # assume A, B, Y use separate memory
+        A_info, B_info = input_tensors['A'], input_tensors['B']
+        stack_shape = multidirectional_broadcasting(A_info.shape[:-2], B_info.shape[:-2])
+        M_dim_value, N_dim_value = A_info.shape[-2], B_info.shape[-1]
+
+        A_size = A_info.size()
+        B_size = B_info.size()
+        Y_size = reduce(lambda x, y: x * y, stack_shape + [M_dim_value, N_dim_value])
         
-        operation_intensity = total_operation / total_memory_reference
-
-        compute_power = arch_config.get_compute_power()  # operation/cycle
-        memory_bandwidth = arch_config.get_memory_bandwidth() // Y_info.dtype_size  # element/cycle
-        maximum_intensity = compute_power / memory_bandwidth  # operation/element
-
-        if operation_intensity < maximum_intensity:
-            actual_intensity = memory_bandwidth * operation_intensity
-        else:
-            actual_intensity = compute_power
-        total_cycles = total_operation / actual_intensity
-        return total_cycles
-
-    def _estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
-        A_sbp_sig, B_sbp_sig = sbp_signatures['A'], sbp_signatures['B']
-        Y_sbp_sig_wo_reduce = derive_output_sbp_signature({'A': A_sbp_sig, 'B': B_sbp_sig}, self._rule_table)['Y']
-        used_memory = A_info.numel() * A_info.dtype_size / A_sbp_sig.get_split_size() \
-                    + B_info.numel() * B_info.dtype_size / B_sbp_sig.get_split_size() \
-                    + Y_info.numel() * Y_info.dtype_size / Y_sbp_sig_wo_reduce.get_split_size()
-        actual_memory = arch_config.get_memory_size()
-
-        return 0 if used_memory < actual_memory else np.inf
+        return A_size + B_size + Y_size
 
     def _generate_candidate_sbp_signatures(self) -> None:
         candidate_sbp_signatures = []
@@ -72,29 +73,30 @@ class MatMulOperator(Operator):
         M_dim_value, K_dim_value, N_dim_value = A_info.shape[-2], A_info.shape[-1], B_info.shape[-1]
         M_dim_value_factors, K_dim_value_factors, N_dim_value_factors = factoring(M_dim_value), factoring(K_dim_value), factoring(N_dim_value)
 
+        def mul_reduce(s):
+            return reduce(lambda x, y: x * y, s)
+
+        def get_input_sbp_parallel(tensor_info, dim, offset):
+            dim_ = dim - offset
+            if dim_ >= 0 and tensor_info.shape[dim_] != 1:
+                return SplitSbpParallel(dim_)
+            else:
+                return BroadcastSbpParallel()
+
         for num_stack_split_dim in range(0, min(Y_shape_dims - 2, 1) + 1):
             for stack_split_dims in combinations(list(range(Y_shape_dims - 2)), num_stack_split_dim):
                 stack_split_dim_values = [Y_info.shape[dim] for dim in stack_split_dims]
                 stack_split_dim_value_factors = [factoring(val) for val in stack_split_dim_values]
                 
-                def validate_split(split):
-                    if 1 in split[3:]:
-                        return False  # must be split on stack split dims
-                    total_split = reduce(lambda x, y: x * y, split)
-                    return total_split in self.num_core_range
-                
                 possible_splits = [split for split in product(
                     M_dim_value_factors, N_dim_value_factors, K_dim_value_factors, *stack_split_dim_value_factors)
-                    if validate_split(split)]
-                
-                def get_input_sbp_parallel(tensor_info, dim, offset):
-                    dim_ = dim - offset
-                    if dim_ >= 0 and tensor_info.shape[dim_] != 1:
-                        return SplitSbpParallel(dim_)
-                    else:
-                        return BroadcastSbpParallel()
-                
-                for split in possible_splits:
+                    if mul_reduce(split) in self.num_core_range]
+                candidate_splits = sorted(possible_splits, key=mul_reduce, reverse=True)
+                # [:min(200, len(possible_splits))]
+
+                for split in candidate_splits:
+                    if 1 in split[3:]: continue  # covered in lower num_stack_split_dim
+
                     placement = Placement(shape=split)
                     Y_sbp_sig = SbpSignature(
                         placement,
@@ -188,8 +190,9 @@ if __name__ == "__main__":
         input_tensors=input_tensors,
         output_tensors=output_tensors
     )
-    matmul_op.num_core_range = list(range(1024, 4096 + 1))
+    matmul_op.num_core_range = list(range(16384, 16384 + 1))
     matmul_op.generate_candidate_sbp_signatures()
+    print(matmul_op._candidate_sbp_signatures)
 
     arch_config = ArchConfig({
         'core_num_mac': 32,

@@ -21,11 +21,17 @@ class OpGraphConstructor(ABC):
     """
     def __init__(self, *args, **kwargs) -> None:
         pass
-        
+
     def build_op_graph(self) -> OpGraph:
         onnx_model = self._get_onnx_model()
         op_graph = self._build_from_onnx_model(onnx_model)
+        op_graph.name = self._graph_name
         return op_graph
+    
+    @property
+    @abstractmethod
+    def _graph_name(self):
+        return None
     
     @abstractmethod
     def _get_onnx_model(self):
@@ -75,6 +81,10 @@ class OpGraphConstructor(ABC):
                 used_tensors = list(u_out & v_in)
                 if used_tensors:
                     op_graph.add_edge(u, v, used_tensors=used_tensors)
+
+        logger.info(f"Summary for building op graph:")
+        logger.info(f"Number of Op in original ONNX model: {len(onnx_model.graph.node)}")
+        logger.info(f"Number of Op in original exported Op Graph: {op_graph.number_of_nodes()}")
         
         op_graph._onnx_model = onnx_model
 
