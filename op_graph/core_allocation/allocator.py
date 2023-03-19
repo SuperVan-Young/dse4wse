@@ -19,23 +19,22 @@ class CoreAllocator():
         self.arch_config = arch_config
         self.num_wafer = num_wafer
 
-    def allocate(self, op_graph: OpGraph, duplication_table: Union[None, Dict[str, int]] = None) -> OpGraph:
+    def allocate(self, op_graph: OpGraph) -> OpGraph:
         """Allocate core range to operators in op graph.
         Parameters
             - duplication_table: the operator has multiple duplication that need to allocate cores
         """
-        if duplication_table is None:
-            duplication_table = {name: 1 for name in op_graph.nodes()}
+        duplication_table = op_graph.duplication_table
 
         total_cores = self.arch_config.get_total_cores() * self.num_wafer
         core_memory_size = self.arch_config.get_memory_size()
         get_max_alloc_core = lambda num_core_range: max([x.sup for x in num_core_range.extrema])
 
         mem_total_cores = total_cores
-        op_name_2_mem_core_range = self._allocate_on_memory(op_graph, mem_total_cores, core_memory_size, duplication_table)
+        op_name_2_mem_core_range = self._allocate_on_memory(op_graph, mem_total_cores, core_memory_size)
 
         comp_total_cores = total_cores - reduce(lambda x, y: x + y, [get_max_alloc_core(core_range) * duplication_table[name] for name, core_range in op_name_2_mem_core_range.items()])
-        op_name_2_comp_core_range = self._allocate_on_compute(op_graph, comp_total_cores, duplication_table)
+        op_name_2_comp_core_range = self._allocate_on_compute(op_graph, comp_total_cores)
 
         op_name_2_final_core_range = {name: op_name_2_mem_core_range[name] + op_name_2_comp_core_range[name] for name in op_graph.nodes()}
 
@@ -51,9 +50,10 @@ class CoreAllocator():
         assert total_alloc_cores < total_cores
         return op_graph_
 
-    def _allocate_on_memory(self, op_graph: OpGraph, total_cores: int, core_memory_size: int, duplication_table: Dict[str, int]) -> Dict[str, interval]:
+    def _allocate_on_memory(self, op_graph: OpGraph, total_cores: int, core_memory_size: int) -> Dict[str, interval]:
         """Allocate minimum cores based on the operator's memory utilization
         """
+        duplication_table = op_graph.duplication_table
         total_memory = total_cores * core_memory_size
 
         op_name_2_mem_utilization = {name: op.get_mem_utilization() for name, op in op_graph.nodes(data='operator')}
@@ -94,7 +94,9 @@ class CoreAllocator():
 
         return op_name_2_core_range
     
-    def _allocate_on_compute(self, op_graph: OpGraph, total_cores: int, duplication_table: Dict[str, int]) -> Dict[str, interval]:
+    def _allocate_on_compute(self, op_graph: OpGraph, total_cores: int) -> Dict[str, interval]:
+        duplication_table = op_graph.duplication_table
+        
         def require_compute_core(op: Operator) -> int:
             factor = None
             if isinstance(op, UnaryElementwiseOperator):

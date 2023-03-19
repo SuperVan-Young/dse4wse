@@ -48,10 +48,6 @@ class BertOpGraphConstructor(OpGraphConstructor):
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
 
-    @property
-    def _graph_name(self):
-        return "Bert batch=%s seq=%s" % (self.batch_size, self.max_seq_len)
-
     def _get_onnx_model(self):
         model_path = os.path.join(MODEL_CACHE_DIR, f"bert_b{self.batch_size}_l{self.max_seq_len}.onnx")
 
@@ -80,15 +76,14 @@ class BertOpGraphConstructor(OpGraphConstructor):
 
         return onnx_model
     
-    def get_duplication_table(self, op_graph: OpGraph, num_hidden_layer=12) -> Dict[str, int]:
+    def _postprocess(self, op_graph: OpGraph):
+        op_graph.name = "Bert batch=%s seq=%s" % (self.batch_size, self.max_seq_len)
+
         def get_duplication(name):
-            if "/encoder/layer" in name:
-                return num_hidden_layer
-            else:
-                return 1
-
-        return {name: get_duplication(name) for name in op_graph.nodes()}
-
+            NUM_HIDDEN_LAYER = 12
+            return NUM_HIDDEN_LAYER if "/encoder/layer" in name else 1
+        op_graph._duplication_table = {name: get_duplication(name) for name in op_graph.nodes()}
+    
 
 if __name__ == "__main__":
     constructor = BertOpGraphConstructor()

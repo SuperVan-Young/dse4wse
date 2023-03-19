@@ -17,7 +17,15 @@ class OpGraph(DiGraph):
     def __init__(self, incoming_graph_data=None, **attr):
         super().__init__(incoming_graph_data, **attr)
         self.name = None
+        self._duplication_table = None
         self._onnx_graph = None
+
+    @property
+    def duplication_table(self):
+        if self._duplication_table is None:
+            return {name: 1 for name in self.nodes()}
+        else:
+            return self._duplication_table
 
     def get_inter_layer_sbp_signatures(self, node):
         """ Get input tensor's sbp signature on previous tensors
@@ -52,11 +60,10 @@ class OpGraph(DiGraph):
             op: Operator
             logger.info(f"{node}: {op.final_sbp_signatures}")
 
-    def profile_performance(self, arch_config: ArchConfig, in_detail=False, duplication_table: Union[Dict, None] = None):
+    def profile_performance(self, arch_config: ArchConfig, in_detail=False):
         logger.info(f"Profiling performance of OP graph {self.name}")
 
-        if duplication_table is None:
-            duplication_table = {name: 1 for name in self.nodes()}
+        duplication_table = self.duplication_table
 
         throughput_bottleneck_name = None
         throughput_bottleneck_latency = 0
@@ -109,13 +116,23 @@ class OpGraph(DiGraph):
         logger.info(f"Throughput bottleneck: {throughput_bottleneck_name}, {int(throughput_bottleneck_latency)} cycles")
 
         overall_total_latency = sum(overall_report_summary.values())
-        logger.info(f"Overall latency: {int(overall_total_latency)} cycles")
+        logger.info(f"Overall latency breakdown by cost type:")
         for k, v in overall_report_summary.items():
-            logger.info(f"    {k:<20} {int(v):>10} cycles {v / overall_total_latency:.2%}")
+            logger.info(f"    {k:<20} {int(v):>10} cycles ({v / overall_total_latency:.2%})")
+        logger.info(f"    {'Total':<20} {int(overall_total_latency):>10} cycles")
 
         for category, report in op_category_2_report_summary.items():
-            logger.info(f"{category}")
+            category_total_latency = sum(report.values())
+            logger.info(f"{category} latency breakdown by cost type:")
             for k, v in report.items():
-                logger.info(f"    {k:<20} {int(v):>10} cycles ({v / overall_report_summary[k]:.2%})")
+                logger.info(f"    {k:<20} {int(v):>10} cycles ({v / category_total_latency:.2%})")
+            logger.info(f"    {'Total':<20} {int(category_total_latency):>10} cycles")
         
+        logger.info("Overall latency breakdown by operator category:")
+        for cost_type, cost_value in overall_report_summary.items():
+            logger.info(f"Cost type: {cost_type}")
+            for category, report in op_category_2_report_summary.items():
+                logger.info(f"    {category}: {int(report[cost_type]):>10} cycles ({report[cost_type] / cost_value:>.2%})")
+            logger.info(f"    Total: {int(cost_value):>10} cycles")
+
         assert total_latency < np.inf

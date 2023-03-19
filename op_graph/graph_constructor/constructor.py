@@ -1,8 +1,7 @@
-import torch
-import onnx
 import os
 import sys
 from abc import ABC, abstractmethod
+from typing import Dict
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,13 +24,8 @@ class OpGraphConstructor(ABC):
     def build_op_graph(self) -> OpGraph:
         onnx_model = self._get_onnx_model()
         op_graph = self._build_from_onnx_model(onnx_model)
-        op_graph.name = self._graph_name
+        self._postprocess(op_graph)
         return op_graph
-    
-    @property
-    @abstractmethod
-    def _graph_name(self):
-        return None
     
     @abstractmethod
     def _get_onnx_model(self):
@@ -89,3 +83,7 @@ class OpGraphConstructor(ABC):
         op_graph._onnx_model = onnx_model
 
         return op_graph
+    
+    @abstractmethod
+    def _postprocess(self, op_graph: OpGraph):
+        raise NotImplementedError

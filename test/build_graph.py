@@ -22,10 +22,9 @@ arch_config = ArchConfig({
 
 graph_constructor = BertOpGraphConstructor()
 op_graph = graph_constructor.build_op_graph()
-duplication_table = graph_constructor.get_duplication_table(op_graph)
 
 # Core Allocation
-op_graph = CoreAllocator(arch_config).allocate(op_graph, duplication_table)
+op_graph = CoreAllocator(arch_config).allocate(op_graph)
 op_graph.profile_core_allocation()
 
 # SBP Strategy
