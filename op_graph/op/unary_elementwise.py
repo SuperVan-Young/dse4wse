@@ -9,7 +9,7 @@ from functools import reduce
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from base import Operator
 from utils import (
-    ArchConfig, Placement, SplitSbpParallel, SbpSignature, TensorInfo, factoring
+    ArchConfig, Placement, SplitSbpParallel, BroadcastSbpParallel, SbpSignature, TensorInfo, factoring
 )
 
 
@@ -41,6 +41,18 @@ class UnaryElementwiseOperator(Operator):
         tensor_info = self.input_tensors['in']
         candidate_sbp_signatures = []
 
+        # Add default placement for single core scenarios
+        if 1 in self.num_core_range:
+            sbp_sig = SbpSignature(
+                Placement(shape=[1]),
+                [BroadcastSbpParallel()],
+            )
+            sbp_sigs = {
+                'in': sbp_sig,
+                'out': sbp_sig,
+            }
+            candidate_sbp_signatures.append(sbp_sigs)
+
         for array_dim in [1, 2]:
             for dims in combinations(list(range(len(tensor_info.shape))), array_dim):
                 dim_values = [tensor_info.shape[dim] for dim in dims]
@@ -49,10 +61,10 @@ class UnaryElementwiseOperator(Operator):
                     total_split = reduce(lambda x, y: x * y, split)
                     return total_split in self.num_core_range
                 possible_splits = [split for split in product(*dim_value_factors) if validate_split(split)]
+                if not possible_splits: continue  # e.g. split on dim_value = 1
                 max_split = max(possible_splits, key=lambda s: reduce(lambda x, y: x * y, s))
 
-                if 1 in max_split:
-                    continue
+                if 1 in max_split: continue  # covered by lower array_dim
 
                 sbp_signature = SbpSignature(
                     Placement(shape=max_split), 

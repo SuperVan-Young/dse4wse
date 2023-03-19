@@ -26,6 +26,7 @@ class Operator(ABC):
         self.op_type = op_type
         self.input_tensors = input_tensors 
         self.output_tensors = output_tensors
+        self.is_debug = kwargs.get('debug', False)
 
         self.num_core_range : Container
         self.num_core_range = None
@@ -56,12 +57,12 @@ class Operator(ABC):
             current_sbp_signature = sbp_signatures[param_name]
             comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
                                                              arch_config=arch_config, tensor_info=tensor_info)
-        
-        logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
-        logger.debug(f"input comm cost : {int(comm_input_cost):>20}")
-        logger.debug(f"Compute cost    : {int(compute_cost):>20}")
-        logger.debug(f"Reduce comm cost: {int(comm_reduce_cost):>20}")
-        logger.debug(f"Memory cost     : {(0 if memory_cost == 0 else 'INF'):>20}")
+        if self.is_debug:
+            logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
+            logger.debug(f"input comm cost : {int(comm_input_cost):>20}")
+            logger.debug(f"Compute cost    : {int(compute_cost):>20}")
+            logger.debug(f"Reduce comm cost: {int(comm_reduce_cost):>20}")
+            logger.debug(f"Memory cost     : {(0 if memory_cost == 0 else 'INF'):>20}")
 
         return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
     
@@ -83,9 +84,10 @@ class Operator(ABC):
         else:
             available_compute_power = compute_power  # compute bounded
 
-        logger.debug(f"MAC count: {mac_count}")
-        logger.debug(f"operational intensity: {operational_intensity}")
-        logger.debug(f"maximum intensity: {maximum_intensity}")
+        if self.is_debug:
+            logger.debug(f"MAC count: {mac_count}")
+            logger.debug(f"operational intensity: {operational_intensity}")
+            logger.debug(f"maximum intensity: {maximum_intensity}")
 
         total_cycles = mac_count / available_compute_power
         return total_cycles
@@ -110,19 +112,20 @@ class Operator(ABC):
         best_cost = np.inf
         best_sbp_signatures = None
 
-        logger.debug(f"Candidate sbp signatures for {self.__class__}: {self.name}")
         for idx, sbp in enumerate(self._candidate_sbp_signatures):
             cost = self.estimate_cost(sbp, arch_config, inter_layer_sbp_signatures)
             if cost != np.inf:
-                logger.debug(f"Cost = {int(cost):>10d}, for {idx}-th {sbp}")
+                if self.is_debug:
+                    logger.debug(f"Cost = {int(cost):>10d}, for {idx}-th {sbp}")
             if cost < best_cost:
                 best_cost = cost
                 best_sbp_signatures = sbp 
 
         if best_sbp_signatures is None: 
             raise RuntimeError(f"Cannot find valid sbp signature!")
-        logger.debug(f"Best sbp signature: {best_sbp_signatures}")
-        logger.debug(f"Best Cost: {int(best_cost):>10d}")
+        if self.is_debug:
+            logger.debug(f"Best sbp signature: {best_sbp_signatures}")
+            logger.debug(f"Best Cost: {int(best_cost):>10d}")
 
         for t in chain(self.input_tensors.keys(), self.output_tensors.keys()):
             if t not in best_sbp_signatures:

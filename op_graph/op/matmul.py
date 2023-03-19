@@ -93,6 +93,7 @@ class MatMulOperator(Operator):
                     if mul_reduce(split) in self.num_core_range]
                 candidate_splits = sorted(possible_splits, key=mul_reduce, reverse=True)
                 # [:min(200, len(possible_splits))]
+                # TODO: plot perf against utilized core
 
                 for split in candidate_splits:
                     if 1 in split[3:]: continue  # covered in lower num_stack_split_dim

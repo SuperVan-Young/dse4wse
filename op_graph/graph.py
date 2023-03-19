@@ -21,3 +21,13 @@ class OpGraph(DiGraph):
         for node, op in self.nodes(data='operator'):
             op: Operator
             logger.info(f"{node}: {op.num_core_range}")
+            
+            upper_bound = max([x.sup for x in op.num_core_range.extrema])
+            if upper_bound == 0:
+                logger.warn(f"{node} doesn't have allocated cores.")
+
+    def profile_final_sbp_signatures(self):
+        logger.info(f"Profiling final SBP signatures of OP graph {self.name}")
+        for node, op in self.nodes(data='operator'):
+            op: Operator
+            logger.info(f"{node}: {op.final_sbp_signatures}")
