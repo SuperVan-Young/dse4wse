@@ -31,3 +31,5 @@ op_graph.profile_core_allocation()
 # SBP Strategy
 op_graph = LocalSbpConstructor(arch_config).find_best_strategy(op_graph)
 op_graph.profile_final_sbp_signatures()
+
+op_graph.profile_performance(arch_config, in_detail=True)

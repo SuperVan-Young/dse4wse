@@ -36,27 +36,12 @@ class Operator(ABC):
         self.final_sbp_signatures = {}
 
     def estimate_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig, 
-                      inter_layer_sbp_signatures: Dict[str, SbpSignature]) -> float:
-        comm_input_cost = 0
-        for param_name, tensor_info in self.input_tensors.items():
-            current_sbp_signature = sbp_signatures[param_name]
-            if not tensor_info.inplace:
-                previous_sbp_signatures = inter_layer_sbp_signatures.get(tensor_info.name, None)
-                comm_input_cost += calc_comm_cost_for_input(previous_sbp_signatures, current_sbp_signature, 
-                                                            arch_config=arch_config, tensor_info=tensor_info)
-
+                      inter_layer_sbp_signatures: Dict[str, SbpSignature], detailed_report=False) -> Union[float, Dict]:
+        comm_input_cost = self.estimate_comm_input_cost(sbp_signatures, arch_config, inter_layer_sbp_signatures)
         compute_cost = self.estimate_compute_cost(sbp_signatures, arch_config)
-
         memory_cost = self.estimate_memory_cost(sbp_signatures, arch_config)
-
-        comm_reduce_cost = 0
-        input_sbp_signatures = {name: sbp for name, sbp in sbp_signatures.items() if name in self.input_tensors}
-        output_sbp_signatures = derive_output_sbp_signature(input_sbp_signatures, self._rule_table)
-        for param_name, tensor_info in self.output_tensors.items():
-            previous_sbp_signature = output_sbp_signatures[param_name]
-            current_sbp_signature = sbp_signatures[param_name]
-            comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
-                                                             arch_config=arch_config, tensor_info=tensor_info)
+        comm_reduce_cost = self.estimate_comm_reduce_cost(sbp_signatures, arch_config)
+        
         if self.is_debug:
             logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
             logger.debug(f"input comm cost : {int(comm_input_cost):>20}")
@@ -64,7 +49,28 @@ class Operator(ABC):
             logger.debug(f"Reduce comm cost: {int(comm_reduce_cost):>20}")
             logger.debug(f"Memory cost     : {(0 if memory_cost == 0 else 'INF'):>20}")
 
-        return comm_input_cost + compute_cost + comm_reduce_cost + memory_cost
+        report = {
+            'comm_input_cost': comm_input_cost,
+            'compute_cost': compute_cost,
+            'memory_cost': memory_cost,
+            'comm_reduce_cost': comm_reduce_cost,
+        }
+
+        if detailed_report:
+            return report
+        else:
+            return sum(report.values())
+    
+    def estimate_comm_input_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig,
+                                 inter_layer_sbp_signatures: Dict[str, SbpSignature]) -> float:
+        comm_input_cost = 0
+        for param_name, tensor_info in self.input_tensors.items():
+            current_sbp_signature = sbp_signatures[param_name]
+            if not tensor_info.inplace:
+                previous_sbp_signatures = inter_layer_sbp_signatures.get(tensor_info.name, None)
+                comm_input_cost += calc_comm_cost_for_input(previous_sbp_signatures, current_sbp_signature, 
+                                                            arch_config=arch_config, tensor_info=tensor_info)
+        return comm_input_cost
     
     def estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
         """Estimate execution latency with roofline model.
@@ -99,6 +105,17 @@ class Operator(ABC):
         available_memory = arch_config.get_memory_size()
 
         return 0 if mem_utilization <= available_memory else np.inf
+    
+    def estimate_comm_reduce_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
+        comm_reduce_cost = 0
+        input_sbp_signatures = {name: sbp for name, sbp in sbp_signatures.items() if name in self.input_tensors}
+        output_sbp_signatures = derive_output_sbp_signature(input_sbp_signatures, self._rule_table)
+        for param_name, tensor_info in self.output_tensors.items():
+            previous_sbp_signature = output_sbp_signatures[param_name]
+            current_sbp_signature = sbp_signatures[param_name]
+            comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
+                                                             arch_config=arch_config, tensor_info=tensor_info)
+        return comm_reduce_cost
 
     def generate_candidate_sbp_signatures(self):
         assert self.num_core_range != None
