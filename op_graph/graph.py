@@ -136,3 +136,5 @@ class OpGraph(DiGraph):
             logger.info(f"    Total: {int(cost_value):>10} cycles")
 
         assert total_latency < np.inf
+
+        return total_latency
