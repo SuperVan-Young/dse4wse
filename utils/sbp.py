@@ -109,7 +109,7 @@ class SbpSignature():
     
     def __repr__(self):
         main_str = ", ".join([f"{str(s)}: {p}" for p, s in zip(self.placement.shape, self.sbp_parallels)])
-        main_str = "Sbp Signature [" + main_str + "]"
+        main_str = "[" + main_str + "]"
         return main_str
 
 
@@ -181,7 +181,10 @@ def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], out
     # To form a broadcasting tree on a 2d array of N cores, the critical path is from center to corner, whose length ~ sqrt(N)
     # Each 'core' here is a split cluster, whose bandwidth has been estimated
     output_broadcast_size = output_sbp_signatures.get_broadcast_size()
-    intra_layer_comm_cost = (sqrt(output_broadcast_size) * tensor_size) // split_cluster_bandwidth
+    if output_broadcast_size > 1:
+        intra_layer_comm_cost = (sqrt(output_broadcast_size) * tensor_size) // split_cluster_bandwidth
+    else:
+        intra_layer_comm_cost = 0
 
     comm_cost = inter_layer_comm_cost + intra_layer_comm_cost
 
