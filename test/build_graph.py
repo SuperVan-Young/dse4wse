@@ -5,6 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from op_graph.graph_constructor import BertOpGraphConstructor
 from op_graph.core_allocation import CoreAllocator
+from op_graph.sbp_constructor import LocalSbpConstructor
 from utils import ArchConfig
 
 # Cerebras WSE
@@ -19,8 +20,14 @@ arch_config = ArchConfig({
     'reticle_array_width': 8,
 })
 
-op_graph = BertOpGraphConstructor().build_op_graph()
+graph_constructor = BertOpGraphConstructor()
+op_graph = graph_constructor.build_op_graph()
+duplication_table = graph_constructor.get_duplication_table(op_graph)
 
 # Core Allocation
-op_graph = CoreAllocator(arch_config).allocate(op_graph)
+op_graph = CoreAllocator(arch_config).allocate(op_graph, duplication_table)
 op_graph.profile_core_allocation()
+
+# SBP Strategy
+op_graph = LocalSbpConstructor(arch_config).find_best_strategy(op_graph)
+op_graph.profile_final_sbp_signatures()

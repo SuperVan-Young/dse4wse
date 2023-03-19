@@ -68,7 +68,7 @@ class OpGraphConstructor(ABC):
             try:
                 op_node = build_operator(name, op_type, input_tensors, output_tensors)
             except NotImplementedError:
-                logger.debug(f"Ignoring operator {name} due to missing implementation.")
+                logger.info(f"Ignoring operator {name} due to missing implementation.")
                 continue
             op_graph.add_node(name)
             op_graph.nodes[name]['operator'] = op_node
