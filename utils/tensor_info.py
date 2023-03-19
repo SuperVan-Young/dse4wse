@@ -35,7 +35,7 @@ class TensorInfo():
         return onnx_dtype_2_storage_size(self.onnx_dtype)
     
     def numel(self):
-        return reduce(lambda x, y: x * y, self.shape)
+        return reduce(lambda x, y: x * y, self.shape, 1)  # shape could be empty for scalar value
     
     def size(self):
         """In Byte
