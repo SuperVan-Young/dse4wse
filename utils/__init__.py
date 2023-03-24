@@ -11,10 +11,10 @@ from sbp import (
     BroadcastSbpParallel,
     PartialSbpParallel,
     SbpSignature,
-    derive_output_sbp_signature,
-    derive_reduced_sbp_signatures,
-    calc_comm_cost_for_input,
-    calc_comm_cost_for_reduction,
+    get_local_tensor_info,
+    derive_output_sbp_signatures,
+    calc_comm_cost_on_same_devices,
+    calc_comm_cost_on_disjoint_devices,
 )
 from tensor_info import (
     TensorInfo,
@@ -23,5 +23,4 @@ from tensor_info import (
 from split import (
     factoring,
     get_max_factor,
-    get_split_tensor_info
 )

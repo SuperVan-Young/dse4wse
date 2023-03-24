@@ -3,6 +3,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
+import math
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Container, Union
@@ -10,8 +11,8 @@ from itertools import chain
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utils import (
-    ArchConfig, SbpSignature, TensorInfo, calc_comm_cost_for_input, calc_comm_cost_for_reduction,
-    derive_output_sbp_signature, derive_reduced_sbp_signatures, logger, get_split_tensor_info
+    ArchConfig, SbpSignature, TensorInfo, calc_comm_cost_on_same_devices,
+    derive_output_sbp_signatures, logger, get_local_tensor_info
 )
 
 class Operator(ABC):
@@ -30,52 +31,68 @@ class Operator(ABC):
 
         self.num_core_range : Container
         self.num_core_range = None
-        self._candidate_sbp_signatures: List[Dict[str, SbpSignature]]  # param name -> sbp_signature
-        self._candidate_sbp_signatures = []
-        self.final_sbp_signatures : Dict[str, SbpSignature]  # param name -> sbp_signature
-        self.final_sbp_signatures = {}
 
-    def estimate_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig, 
-                      inter_layer_sbp_signatures: Dict[str, SbpSignature], detailed_report=False) -> Union[float, Dict]:
-        comm_input_cost = self.estimate_comm_input_cost(sbp_signatures, arch_config, inter_layer_sbp_signatures)
+        self.final_sbp_signatures : Dict[str, SbpSignature]  # tensor local name -> sbp_signature
+        self.final_sbp_signatures = {}
+        self._candidate_sbp_signatures: List[Dict[str, SbpSignature]]  # tensor local name -> sbp_signature
+        self._candidate_sbp_signatures = []
+
+    def estimate_cost(self, sbp_signatures: Dict[str, SbpSignature], input_sbp_signatures: Dict[str, SbpSignature],
+                       arch_config: ArchConfig, detailed_report=False) -> Union[float, Dict]:
+        """Estimate total cost of sbp signatures.
+
+            @param sbp_signatures: input sbps demanded, and output sbps guaranteed by current operator
+            @param input_sbp_signatures: actual input sbps, param -> sbp_signature
+            @param arch_config: architecture description
+        """
+        transmission_cost = self.estimate_transmission_cost(sbp_signatures, input_sbp_signatures, arch_config)
         compute_cost = self.estimate_compute_cost(sbp_signatures, arch_config)
         memory_cost = self.estimate_memory_cost(sbp_signatures, arch_config)
-        comm_reduce_cost = self.estimate_comm_reduce_cost(sbp_signatures, arch_config)
         
         if self.is_debug:
             logger.debug(f"Estimating cost for SBP signature {sbp_signatures}")
-            logger.debug(f"input comm cost : {int(comm_input_cost):>20}")
-            logger.debug(f"Compute cost    : {int(compute_cost):>20}")
-            logger.debug(f"Reduce comm cost: {int(comm_reduce_cost):>20}")
-            logger.debug(f"Memory cost     : {(0 if memory_cost == 0 else 'INF'):>20}")
+            logger.debug(f"Transmission cost : {int(transmission_cost):>20}")
+            logger.debug(f"Compute cost      : {int(compute_cost):>20}")
+            logger.debug(f"Memory cost       : {(0 if memory_cost == 0 else 'INF'):>20}")
 
         report = {
-            'comm_input_cost': comm_input_cost,
+            'transmission_cost': transmission_cost,
             'compute_cost': compute_cost,
             'memory_cost': memory_cost,
-            'comm_reduce_cost': comm_reduce_cost,
         }
 
         if detailed_report:
             return report
         else:
             return sum(report.values())
-    
-    def estimate_comm_input_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig,
-                                 inter_layer_sbp_signatures: Dict[str, SbpSignature]) -> float:
+        
+    def estimate_transmission_cost(self, sbp_signatures: Dict[str, SbpSignature], input_sbp_signatures: Dict[str, SbpSignature],
+                                   arch_config: ArchConfig) -> float:
+        """Estimate transmission latency.
+        Transmission for both input and output cannot be overlapped with compute for quick impl.
+        Input tensors are required to be on the same devices (unless this is a boxing operator).
+        """
         comm_input_cost = 0
-        for param_name, tensor_info in self.input_tensors.items():
-            current_sbp_signature = sbp_signatures[param_name]
-            if not tensor_info.inplace:
-                previous_sbp_signatures = inter_layer_sbp_signatures.get(tensor_info.name, None)
-                comm_input_cost += calc_comm_cost_for_input(previous_sbp_signatures, current_sbp_signature, 
-                                                            arch_config=arch_config, tensor_info=tensor_info)
-        return comm_input_cost
+        for local_name, tensor_info in self.input_tensors.items():
+            cur_sbp_sig = sbp_signatures[local_name]
+            prev_sbp_sig = input_sbp_signatures.get(local_name, None)
+            comm_input_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
+
+        comm_output_cost = 0
+        derived_output_sbp_signatures = derive_output_sbp_signatures(input_sbp_signatures, self._rule_table)
+        for local_name, tensor_info in self.output_tensors.items():
+            prev_sbp_sig = derived_output_sbp_signatures[local_name]
+            cur_sbp_sig = sbp_signatures[local_name]
+            comm_output_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
+        
+        return comm_input_cost + comm_output_cost
     
     def estimate_compute_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
         """Estimate execution latency with roofline model.
+        Input comm and compute are decoupled for quick impl.
+        Virtual transform is essentially overlapping comm with input, but this effect is ignored.
         """
-        input_tensors = {name: get_split_tensor_info(tensor_info, sbp_signatures[name])
+        input_tensors = {name: get_local_tensor_info(tensor_info, sbp_signatures[name])
                          for name, tensor_info in self.input_tensors.items()}
         mac_count = self.get_mac_count(input_tensors)            # mac
         mem_ref_count = self.get_mem_ref_count(input_tensors)    # byte
@@ -99,23 +116,18 @@ class Operator(ABC):
         return total_cycles
 
     def estimate_memory_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        input_tensors = {name: get_split_tensor_info(tensor_info, sbp_signatures[name])
+        """Estimate memory cost.
+        We only consider memory held up by the operator's output tensor, i.e. its product;
+        The runtime overhead of virtual transformation, i.e. the temporary buffer size, is ignored.
+        Manipulating the original input tensors without making a deepcopy is technically wrong, 
+        but we ignore the overhead of making another copy.
+        """
+        input_tensors = {name: get_local_tensor_info(tensor_info, sbp_signatures[name])
                          for name, tensor_info in self.input_tensors.items()}
         mem_utilization = self.get_mem_utilization(input_tensors)
         available_memory = arch_config.get_memory_size()
 
         return 0 if mem_utilization <= available_memory else np.inf
-    
-    def estimate_comm_reduce_cost(self, sbp_signatures: Dict[str, SbpSignature], arch_config: ArchConfig) -> float:
-        comm_reduce_cost = 0
-        input_sbp_signatures = {name: sbp for name, sbp in sbp_signatures.items() if name in self.input_tensors}
-        output_sbp_signatures = derive_output_sbp_signature(input_sbp_signatures, self._rule_table)
-        for param_name, tensor_info in self.output_tensors.items():
-            previous_sbp_signature = output_sbp_signatures[param_name]
-            current_sbp_signature = sbp_signatures[param_name]
-            comm_reduce_cost += calc_comm_cost_for_reduction(previous_sbp_signature, current_sbp_signature, 
-                                                             arch_config=arch_config, tensor_info=tensor_info)
-        return comm_reduce_cost
 
     def generate_candidate_sbp_signatures(self):
         assert self.num_core_range != None
@@ -184,4 +196,6 @@ class Operator(ABC):
     @property
     @abstractmethod
     def _rule_table(self) -> pd.DataFrame:
+        """ columns = tensor local name, index = rule number
+        """
         raise NotImplementedError

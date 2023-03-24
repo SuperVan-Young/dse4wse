@@ -136,6 +136,17 @@ class SbpSignature():
         main_str = "[" + main_str + "]"
         return main_str
 
+def get_local_tensor_info(tensor_info: TensorInfo, sbp_signature: SbpSignature):
+    tensor_info_ = deepcopy(tensor_info)
+    tensor_info_.shape = list(tensor_info_.shape)
+    for placement_value, sbp_parallel in zip(sbp_signature.placement.shape, sbp_signature.sbp_parallels):
+        if isinstance(sbp_parallel, SplitSbpParallel):
+            dim = sbp_parallel.dim
+            dim_value = tensor_info_.shape[dim]
+            assert dim_value % placement_value == 0
+            tensor_info_.shape[dim] //= placement_value
+    tensor_info_.shape = tuple(tensor_info_.shape)
+    return tensor_info_
 
 def derive_output_sbp_signatures(input_sbp_signatures: Dict[str, SbpSignature], rule_table: pd.DataFrame) -> Dict[str, SbpSignature]:
     # validate placement shape
@@ -162,9 +173,10 @@ def derive_output_sbp_signatures(input_sbp_signatures: Dict[str, SbpSignature], 
     return output_sbp_signatures
 
 
-def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: Union[SbpSignature, None], cur_sbp_sig: SbpSignature, arch_config: ArchConfig) -> float:
+def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSignature, cur_sbp_sig: SbpSignature, arch_config: ArchConfig) -> float:
     """Estimate communication cost of rearranging global tensor on the same device, without allocating more memory
     """
+    assert prev_sbp_sig is not None
     assert prev_sbp_sig.placement.shape == cur_sbp_sig.placement.shape
     placement = prev_sbp_sig.placement
 
@@ -206,7 +218,7 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: Union[
             assert False
 
     # Handle virtual transform
-    local_tensor_shape = tensor_info.get_local_tensor_shape(cur_sbp_sig)
+    local_tensor_shape = get_local_tensor_info(tensor_info, cur_sbp_sig).shape
     for dim in virtual_transform_dims:
         dim_value = placement.shape[dim]
         assert local_tensor_shape[dim] % dim_value == 0
