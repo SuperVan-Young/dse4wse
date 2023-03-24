@@ -4,6 +4,8 @@ import re
 import numpy as np
 from functools import reduce
 from onnx.mapping import TENSOR_TYPE_MAP
+from sbp import SbpSignature
+from copy import deepcopy
 
 def onnx_dtype_2_storage_size(dtype: int) -> int:
     name = TENSOR_TYPE_MAP[dtype].name
@@ -41,6 +43,15 @@ class TensorInfo():
         """In Byte
         """
         return self.numel() * self.dtype_size
+    
+    def get_local_tensor_shape(self, sbp_signature: SbpSignature):
+        shape_ = deepcopy(self.shape)
+        shape_ = list(shape_)
+        for dim_value, sbp_parallel in zip(sbp_signature.placement.shape, sbp_signature.sbp_parallels):
+            if sbp_parallel.is_split():
+                assert shape_[sbp_parallel.dim] % dim_value == 0
+                shape_[sbp_parallel.dim] //= dim_value
+        return shape_
     
 def multidirectional_broadcasting(A_shape: Tuple[int], B_shape: Tuple[int]) -> Tuple[int]:
     """https://github.com/onnx/onnx/blob/main/docs/Broadcasting.md

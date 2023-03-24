@@ -7,6 +7,7 @@ import re
 from copy import deepcopy
 from math import sqrt
 from functools import reduce
+from itertools import permutations
 from logger import logger
 from arch_config import ArchConfig
 from tensor_info import TensorInfo
@@ -17,13 +18,29 @@ PARTIAL_SBP_PARALLEL = 3
 
 class SbpParallel():
     def __init__(self) -> None:
-        self.type = None
+        pass
+
+    @property
+    def type(self):
+        return None
+    
+    def is_split(self) -> bool:
+        return self.type == SPLIT_SBP_PARALLEL
+    
+    def is_broadcast(self) -> bool:
+        return self.type == BROADCAST_SBP_PARALLEL
+    
+    def is_partial(self) -> bool:
+        return self.type == PARTIAL_SBP_PARALLEL
 
 class SplitSbpParallel(SbpParallel):
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.type = SPLIT_SBP_PARALLEL
         self.dim = dim
+    
+    @property
+    def type(self):
+        return SPLIT_SBP_PARALLEL
 
     def __repr__(self) -> str:
         return f"S({self.dim})"
@@ -31,7 +48,10 @@ class SplitSbpParallel(SbpParallel):
 class BroadcastSbpParallel(SbpParallel):
     def __init__(self) -> None:
         super().__init__()
-        self.type = BROADCAST_SBP_PARALLEL
+
+    @property
+    def type(self):
+        return BROADCAST_SBP_PARALLEL
 
     def __repr__(self) -> str:
         return "B"
@@ -39,7 +59,10 @@ class BroadcastSbpParallel(SbpParallel):
 class PartialSbpParallel(SbpParallel):
     def __init__(self) -> None:
         super().__init__()
-        self.type = PARTIAL_SBP_PARALLEL
+    
+    @property
+    def type(self):
+        return PARTIAL_SBP_PARALLEL
 
     def __repr__(self) -> str:
         return "P"
@@ -61,15 +84,16 @@ def get_sbp_parallel_from_str(s: str) -> SbpParallel:
         raise RuntimeError("Invalid sbp parallel str %s" % (s,))
     
 class Placement():
-    def __init__(self, array: Union[None, np.array] = None, shape: Union[Tuple[int], None] = None) -> None:
-        if array:
-            self.array = array
-            self.shape = array.shape
-        else:
-            assert shape != None
-            self.array = None
-            self.shape = shape
+    def __init__(self, shape: Tuple[int], interconnect_types: Tuple[int]) -> None:
+        self.shape = shape
+        self.interconnect_types = interconnect_types
 
+    def __eq__(self, __value: object) -> bool:
+        if not isinstance(__value, Placement):
+            return False
+        same_shape = tuple(self.shape) == tuple(__value.shape)
+        same_interconnect_types = tuple(self.interconnect_types) == tuple(__value.interconnect_types)
+        return same_shape and same_interconnect_types
 
 class SbpSignature():
     """Description of the distribution of a tensor on local devices.
@@ -113,7 +137,7 @@ class SbpSignature():
         return main_str
 
 
-def derive_output_sbp_signature(input_sbp_signatures: Dict[str, SbpSignature], rule_table: pd.DataFrame) -> Dict[str, SbpSignature]:
+def derive_output_sbp_signatures(input_sbp_signatures: Dict[str, SbpSignature], rule_table: pd.DataFrame) -> Dict[str, SbpSignature]:
     # validate placement shape
     placements = [sbp.placement for sbp in input_sbp_signatures.values()]
     first_placement = placements[0]
@@ -138,22 +162,82 @@ def derive_output_sbp_signature(input_sbp_signatures: Dict[str, SbpSignature], r
     return output_sbp_signatures
 
 
-def derive_reduced_sbp_signatures(tensor_shape: Tuple, sbp_signature: SbpSignature) -> List[SbpSignature]:
-    """Reduce Partial to existing Split or Broadcast in the signature.
-    This should only be used for reorganizing output tensor of an operator.
+def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: Union[SbpSignature, None], cur_sbp_sig: SbpSignature, arch_config: ArchConfig) -> float:
+    """Estimate communication cost of rearranging global tensor on the same device, without allocating more memory
     """
-    #TODO: split is a little bit tricky, and will be implemented in the future
-    new_sbp_signature = deepcopy(sbp_signature)
-    new_sbp_signature.sbp_parallels = [
-        x if not x.type == PARTIAL_SBP_PARALLEL else BroadcastSbpParallel()
-          for x in new_sbp_signature.sbp_parallels 
-    ]
-    return [new_sbp_signature]
+    assert prev_sbp_sig.placement.shape == cur_sbp_sig.placement.shape
+    placement = prev_sbp_sig.placement
 
+    # current SBP of virtual transform dimensions
+    # It uses inter-connection to give an abstraction of a large, uniform memory to the consumer
+    # without allocating more static memory.
+    # This only includes S->B
+    virtual_transform_dims = []
+
+    global_tensor_size = tensor_info.size()
+    static_comm_cost = 0  # move once and for all
+
+    for dim, (prev_parallel, cur_parallel, dim_value, interconnect_type) \
+        in enumerate(zip(prev_sbp_sig.sbp_parallels, cur_sbp_sig.sbp_parallels, placement.shape, placement.interconnect_types)):
+        bandwidth = arch_config.get_interconnect_bandwidth(interconnect_type)
+        if prev_parallel.is_split():
+            if cur_parallel.is_split():
+                if prev_parallel.dim != cur_parallel.dim:
+                    static_comm_cost += (dim_value - 1) / dim_value * global_tensor_size / bandwidth
+            elif cur_parallel.is_broadcast():
+                virtual_transform_dims.append(dim)
+            elif cur_parallel.is_partial():
+                raise NotImplementedError("Seriously? Split to partial and waste your memory?")
+            else:
+                assert False
+        elif prev_parallel.is_broadcast():
+            continue
+        elif prev_parallel.is_partial():
+            # We assume output-stationary dataflow, so mem must be allocated for partial.
+            # Neglecting input-stationary dataflow is fine, if only considering mem limitation on output tensor.
+            # There're other sbp signatures that only store single copy of output tensor
+            if cur_parallel.is_split():
+                static_comm_cost += (dim_value - 1) / dim_value * global_tensor_size / bandwidth
+            elif cur_parallel.is_broadcast():
+                static_comm_cost += 2 * (dim_value - 1) / dim_value * global_tensor_size / bandwidth
+            else:
+                continue
+        else:
+            assert False
+
+    # Handle virtual transform
+    local_tensor_shape = tensor_info.get_local_tensor_shape(cur_sbp_sig)
+    for dim in virtual_transform_dims:
+        dim_value = placement.shape[dim]
+        assert local_tensor_shape[dim] % dim_value == 0
+        local_tensor_shape[dim] //= dim_value
+    local_tensor_size = reduce(lambda x, y: x * y, local_tensor_shape)
+
+    def calc_nested_loop_transmission_cost(info_array):
+        iterations, bandwidths = zip(*info_array)
+        iterations = np.cumprod(iterations)
+        bandwidths = np.array(bandwidths)
+        return np.sum(iterations / bandwidths)
+
+    info_array = zip(
+        [placement.shape[dim] for dim in virtual_transform_dims],
+        [arch_config.get_interconnect_bandwidth(placement.interconnect_types[dim]) for dim in virtual_transform_dims])
+    minimum_virtual_transform_cost = local_tensor_size * min(
+        calc_nested_loop_transmission_cost(info_array_)
+        for info_array_ in permutations(info_array, len(info_array))
+    )
+
+    total_cost = static_comm_cost + minimum_virtual_transform_cost
+    return total_cost
+
+
+def calc_comm_cost_on_disjoint_devices():
+    raise NotImplementedError
 
 def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], output_sbp_signatures: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
     """Calculate communication cost for inter layer transmission.
     """
+    logger.warn("Deprecated in the future")
     # check partial dimensions
     # TODO: We could allow transmitting partial tensors with 1-to-1 routing.
     # This is beneficial for reducing unnecessary collective comms.
@@ -194,6 +278,7 @@ def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], out
 def calc_comm_cost_for_reduction(input_sbp_signature: SbpSignature, output_sbp_signature: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:
     """Calculate communication cost for reducing partial to split/broadcast.
     """
+    logger.warn("Deprecated in the future")
     # check placement consistency
     input_placement = input_sbp_signature.placement
     output_placement = output_sbp_signature.placement
