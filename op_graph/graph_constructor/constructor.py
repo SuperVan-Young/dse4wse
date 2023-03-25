@@ -48,6 +48,7 @@ class OpGraphConstructor(ABC):
             tensor_info = TensorInfo(shape=shape, onnx_dtype=dtype, name=name, inplace=inplace)
             return tensor_info
 
+        # FIXME: inplace should be deprecated in the future, since weight is also produced
         tensor_infos = {val.name: get_tensor_info(val, inplace=False) for val in onnx_model.graph.value_info}
         tensor_infos.update({val.name: get_tensor_info(val, inplace=True) for val in onnx_model.graph.input})
         tensor_infos.update({val.name: get_tensor_info(val, inplace=True) for val in onnx_model.graph.output})
