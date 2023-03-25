@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from base import Operator
 from utils import (
     ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, 
-    BroadcastSbpParallel, multidirectional_broadcasting, logger
+    BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info
 )
 
 class MatMulOperator(Operator):
@@ -30,36 +30,60 @@ class MatMulOperator(Operator):
         assert len(input_tensors['A'].shape) > 1, "Currently not support VxM"
         assert len(input_tensors['B'].shape) > 1, "Currently not support MxV"
 
-    def _get_mac_count(self, input_tensors: Dict[str, TensorInfo]):
-        A_info, B_info = input_tensors['A'], input_tensors['B']
-        stack_shape = multidirectional_broadcasting(A_info.shape[:-2], B_info.shape[:-2])
-        M_dim_value, K_dim_value, N_dim_value = A_info.shape[-2], A_info.shape[-1], B_info.shape[-1]
-        return reduce(lambda x, y: x * y, stack_shape + [M_dim_value, K_dim_value, N_dim_value])
+    def get_fp_mac_count(self):
+        A_info, B_info = self.input_tensors['A'], self.input_tensors['B']
+        return self.__get_matmul_mac_count(A_info.shape, B_info.shape)
     
-    def _get_mem_ref_count(self, input_tensors: Dict[str, TensorInfo]):
-        A_info, B_info = input_tensors['A'], input_tensors['B']
-        stack_shape = multidirectional_broadcasting(A_info.shape[:-2], B_info.shape[:-2])
-        M_dim_value, K_dim_value, N_dim_value = A_info.shape[-2], A_info.shape[-1], B_info.shape[-1]
+    def get_bp_mac_count(self):
+        return self.__get_bp_A_mac_count() + self.__get_bp_B_mac_count()
+    
+    def __get_bp_A_mac_count(self):
+        B_info, Y_info = self.input_tensors['B'], self.output_tensors['Y']
+        shape_B_transpose = transpose(B_info.shape, -2, -1)
+        return self.__get_matmul_mac_count(Y_info.shape, shape_B_transpose)
+    
+    def __get_bp_B_mac_count(self):
+        A_info, Y_info = self.input_tensors['A'], self.output_tensors['Y']
+        shape_A_transpose = transpose(A_info.shape, -2, -1)
+        return self.__get_matmul_mac_count(shape_A_transpose, Y_info.shape)
+    
+    def __get_matmul_mac_count(self, shape0, shape1):
+        stack_shape = multidirectional_broadcasting(shape0[:-2], shape1[:-2])
+        M, K0, K1, N = shape0[-2], shape0[-1], shape1[-2], shape1[-1]
+        assert K0 == K1
+        return reduce(lambda x, y: x * y, stack_shape + [M, K1, N])
+    
+    def __get_matmul_sram_access_count(self, shape0, shape1):
+        stack_shape = multidirectional_broadcasting(shape0[:-2], shape1[:-2])
+        M, K0, K1, N = shape0[-2], shape0[-1], shape1[-2], shape1[-1]
+        assert K0 == K1
 
         # assume no inner blocking
-        A_ref_count = M_dim_value * K_dim_value * N_dim_value // self.N_block_size
-        B_ref_count = M_dim_value * K_dim_value * N_dim_value // self.M_block_size
-        Y_ref_count = M_dim_value * N_dim_value // self.K_block_size
+        A_ref_count = M * K0 * N // self.N_block_size
+        B_ref_count = M * K1 * N // self.M_block_size
+        Y_ref_count = M * N // self.K_block_size
         total_ref_count = reduce(lambda x, y: x * y, stack_shape, 1) * (A_ref_count + B_ref_count + Y_ref_count)
 
         return total_ref_count
+    
+    def get_fp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
+        A_info, B_info = self.input_tensors['A'], self.input_tensors['B']
+        A_local = get_local_tensor_info(A_info, intra_sbp_sigs['A'])
+        B_local = get_local_tensor_info(B_info, intra_sbp_sigs['B'])
+        mac_count = self.get_fp_mac_count()
+        sram_access_count = self.__get_matmul_sram_access_count(A_local.shape, B_local.shape)
+        return self.__estimate_latency_with_roofline_model(mac_count, sram_access_count)
 
-    def _get_mem_utilization(self, input_tensors: Dict[str, TensorInfo]):
-        # assume A, B, Y use separate memory
-        A_info, B_info = input_tensors['A'], input_tensors['B']
-        stack_shape = multidirectional_broadcasting(A_info.shape[:-2], B_info.shape[:-2])
-        M_dim_value, N_dim_value = A_info.shape[-2], B_info.shape[-1]
-
-        A_size = A_info.size()
-        B_size = B_info.size()
-        Y_size = reduce(lambda x, y: x * y, stack_shape + [M_dim_value, N_dim_value])
-        
-        return A_size + B_size + Y_size
+    def get_bp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
+        A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
+        A_local = get_local_tensor_info(A_info, intra_sbp_sigs['A'])
+        B_local = get_local_tensor_info(B_info, intra_sbp_sigs['B'])
+        shape_A_transpose = transpose(A_local.shape, -2, -1)
+        shape_B_transpose = transpose(B_local.shape, -2, -1)
+        bp_A_sram_access = self.__get_matmul_sram_access_count(shape_A_transpose, Y_info.shape)
+        bp_B_sram_access = self.__get_matmul_mac_count(Y_info.shape, shape_B_transpose)
+        return self.__estimate_latency_with_roofline_model(self.__get_bp_A_mac_count(), bp_A_sram_access) \
+             + self.__estimate_latency_with_roofline_model(self.__get_bp_B_mac_count(), bp_B_sram_access) 
 
     def _generate_candidate_sbp_signatures(self) -> None:
         candidate_sbp_signatures = []
@@ -165,24 +189,41 @@ class MatMulOperator(Operator):
 
         return pd.DataFrame(data)
     
+    @property
+    def _dim_table(self) -> pd.DataFrame:
+        A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
+        A_shape_dims, B_shape_dims, Y_shape_dims = len(A_info.shape), len(B_info.shape), len(Y_info.shape)
+
+        index = [f"B{i}" for i in range(Y_shape_dims - 2)] + ['M', 'K', 'N']
+        data = {
+            'A': [np.nan] * (Y_shape_dims - A_shape_dims) + list(range(A_shape_dims - 2)) + [B_shape_dims - 2, A_shape_dims - 1, np.nan],
+            'B': [np.nan] * (Y_shape_dims - B_shape_dims) + list(range(B_shape_dims - 2)) + [np.nan, B_shape_dims - 2, B_shape_dims - 1],
+            'Y': list(range(Y_shape_dims - 2)) + [Y_shape_dims - 2, np.nan, Y_shape_dims - 1],
+        }
+
+        return pd.DataFrame(data, index=index)
+    
 if __name__ == "__main__":
     input_tensors = {
         'A': TensorInfo(
-            (1, 12, 512, 768),
-            1,
-            'test_A'
+            name='test_A',
+            shape=(1, 12, 512, 768),
+            onnx_dtype=1,
+            kind='input',
         ),
         'B': TensorInfo(
-            (768, 768),
-            1,
-            'test_B'
+            name='test_B',
+            shape=(768, 768),
+            onnx_dtype=1,
+            kind='weight',
         ),
     }
     output_tensors = {
         'Y': TensorInfo(
-            (1, 12, 512, 768),
-            1,
-            'test_Y'
+            name='test_B',
+            shape=(1, 12, 512, 768),
+            onnx_dtype=1,
+            kind='activation',
         )
     }
     matmul_op = MatMulOperator(

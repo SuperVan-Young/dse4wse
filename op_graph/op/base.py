@@ -53,7 +53,7 @@ class Operator(ABC):
         """
         transmission_cost = self.estimate_transmission_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config)
         compute_cost = self.estimate_compute_cost(intra_sbp_sigs, arch_config)
-        memory_cost = self.estimate_memory_cost(intra_sbp_sigs, arch_config, training_config)
+        memory_cost = self.estimate_sram_cost(intra_sbp_sigs, arch_config, training_config)
         
         if self.is_debug:
             logger.debug(f"Estimating cost for SBP signature {intra_sbp_sigs}")
@@ -100,7 +100,7 @@ class Operator(ABC):
         """
         return self.get_fp_latency(intra_sbp_sigs, arch_config) + self.get_bp_latency(intra_sbp_sigs, arch_config)
 
-    def estimate_memory_cost(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig, training_config: TrainingConfig) -> float:
+    def estimate_sram_cost(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig, training_config: TrainingConfig) -> float:
         """Check if SRAM is enough
         """
         available_sram = arch_config.get_sram_size()
@@ -144,12 +144,6 @@ class Operator(ABC):
     
     # methods for characteristics of computing a local tensor on single core
 
-    def get_fp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
-        return self._get_bp_latency(intra_sbp_sigs)
-    
-    def get_bp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
-        return self._get_bp_latency(intra_sbp_sigs)
-    
     def get_bp_static_sram_utilization(self, intra_sbp_sigs: Dict[str, SbpSignature], training_config: TrainingConfig) -> int:
         """During bp computation of current batch, these static sram cannot be released.
         We consider pipeline-parallelism, where activation of the micro-batch cannot be swapped out to DRAM.
@@ -200,13 +194,37 @@ class Operator(ABC):
         return sram_util
     
     @abstractmethod
-    def _get_fp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
+    def get_fp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
         raise NotImplementedError
     
     @abstractmethod
-    def _get_bp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
+    def get_bp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
         raise NotImplementedError
     
+    @abstractmethod
+    def get_fp_mac_count(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_bp_mac_count(self):
+        raise NotImplementedError
+
+    def __estimate_latency_with_roofline_model(self, mac_count, sram_access_count, arch_config: ArchConfig):
+        arithmetic_intensity = mac_count / sram_access_count
+
+        compute_power = arch_config.get_compute_power()          # mac / cycle
+        memory_bandwidth = arch_config.get_memory_bandwidth()    # byte / cycle
+        maximum_intensity = compute_power / memory_bandwidth     # mac / byte
+
+        if arithmetic_intensity < maximum_intensity:
+            available_compute_power = memory_bandwidth * arithmetic_intensity  # memory bounded
+        else:
+            available_compute_power = compute_power  # compute bounded
+        total_cycles = mac_count / available_compute_power
+        return total_cycles
+
+    # sbp derivation
+
     @abstractmethod
     def _generate_candidate_sbp_signatures(self) -> None:
         raise NotImplementedError
@@ -217,3 +235,9 @@ class Operator(ABC):
         """ columns = tensor local name, index = rule number
         """
         raise NotImplementedError
+    
+    @property
+    @abstractmethod
+    def _dim_table(self) -> pd.DataFrame:
+        """ columns = tensor local name, index = rule number
+        """
