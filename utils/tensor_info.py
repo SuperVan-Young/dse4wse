@@ -11,7 +11,7 @@ def onnx_dtype_2_storage_size(dtype: int) -> int:
 
     size_match = size_pattern.match(name)
     if size_match:
-        size = int(size_match.group(1)) // 4
+        size = int(size_match.group(1)) // 8
         return size
     else:
         if name == "TensorProto.FLOAT":
@@ -24,11 +24,14 @@ def onnx_dtype_2_storage_size(dtype: int) -> int:
             return np.NAN
 
 class TensorInfo():
-    def __init__(self, name: str, shape: Tuple, onnx_dtype: int, inplace=False) -> None:
+    def __init__(self, name: str, shape: Tuple, onnx_dtype: int, kind: str, inplace=False) -> None:
         self.name = name
         self.shape = shape
         self.onnx_dtype = onnx_dtype
-        self.inplace = inplace
+        self.kind = kind
+        self.inplace = inplace  # comm cost on same device for inplace tensor is always 0
+
+        assert kind in ['weight', 'input', 'output', 'activation', 'constant']
 
     @property
     def dtype_size(self):

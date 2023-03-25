@@ -35,12 +35,12 @@ class ArchConfig(UserDict):
         """
         return self.data['core_num_mac']
     
-    def get_memory_bandwidth(self) -> int:
+    def get_sram_bandwidth(self) -> int:
         """Single core memory bandwidth, in terms of Byte/Cycle.
         """
         return self.data['core_buffer_width']
     
-    def get_memory_size(self) -> int:
+    def get_sram_size(self) -> int:
         """Single core SRAM size, in terms of Byte.
         """
         return self.data['core_buffer_size']

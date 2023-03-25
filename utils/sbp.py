@@ -172,6 +172,17 @@ def derive_output_sbp_signatures(input_sbp_signatures: Dict[str, SbpSignature], 
             raise RuntimeError("Cannot find valid derivation for current sbp signature!")
     return output_sbp_signatures
 
+def get_grad_sbp_signature(sbp_signature: SbpSignature) -> SbpSignature:
+    out_sbp_sig = deepcopy(sbp_signature)
+    def change_sbp_parallel(sbp_parallel: SbpParallel):
+        if sbp_parallel.is_split():
+            return sbp_parallel
+        elif sbp_parallel.is_broadcast():
+            return PartialSbpParallel()
+        elif sbp_parallel.is_partial():
+            return BroadcastSbpParallel()
+    out_sbp_sig.sbp_parallels = [change_sbp_parallel(sbp_prl) for sbp_prl in out_sbp_sig.sbp_parallels]
+    return out_sbp_sig
 
 def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSignature, cur_sbp_sig: SbpSignature, arch_config: ArchConfig) -> float:
     """Estimate communication cost of rearranging global tensor on the same device, without allocating more memory
