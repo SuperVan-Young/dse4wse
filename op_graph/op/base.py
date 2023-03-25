@@ -51,20 +51,22 @@ class Operator(ABC):
             @param inter_sbp_sigs: input sbps and output sbps
             @param arch_config: architecture description
         """
-        transmission_cost = self.estimate_transmission_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config)
-        compute_cost = self.estimate_compute_cost(intra_sbp_sigs, arch_config)
-        memory_cost = self.estimate_sram_cost(intra_sbp_sigs, arch_config, training_config)
-        
         if self.is_debug:
             logger.debug(f"Estimating cost for SBP signature {intra_sbp_sigs}")
+            
+        transmission_cost = self.estimate_transmission_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config)
+        compute_cost = self.estimate_compute_cost(intra_sbp_sigs, arch_config)
+        sram_cost = self.estimate_sram_cost(intra_sbp_sigs, arch_config, training_config)
+        
+        if self.is_debug:
             logger.debug(f"Transmission cost : {int(transmission_cost):>20}")
             logger.debug(f"Compute cost      : {int(compute_cost):>20}")
-            logger.debug(f"Memory cost       : {(0 if memory_cost == 0 else 'INF'):>20}")
+            logger.debug(f"SRAM cost         : {(0 if sram_cost == 0 else 'INF'):>20}")
 
         report = {
             'transmission_cost': transmission_cost,
             'compute_cost': compute_cost,
-            'memory_cost': memory_cost,
+            'sram_cost': sram_cost,
         }
 
         if detailed_report:
@@ -88,7 +90,7 @@ class Operator(ABC):
         derived_output_sbp_signatures = derive_output_sbp_signatures(intra_sbp_sigs, self._rule_table)
         for local_name, tensor_info in self.output_tensors.items():
             prev_sbp_sig = derived_output_sbp_signatures[local_name]
-            cur_sbp_sig = inter_sbp_sigs[local_name]
+            cur_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_output_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
         
         return comm_input_cost + comm_output_cost
@@ -107,8 +109,12 @@ class Operator(ABC):
         bp_sram_util = self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, training_config) + self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, training_config)
         # fp uses less sram than bp, thus is ignored
         # temp buffer for dynamic broadcasting is ignored
-
-        return 0 if bp_sram_util <= available_sram else np.inf
+        if bp_sram_util <= available_sram:
+            return 0
+        else:
+            if self.is_debug:
+                logger.debug(f"bp_sram_util {bp_sram_util} > available sram {available_sram}")
+            return np.inf
 
     def generate_candidate_sbp_signatures(self):
         assert self.num_core_range != None
@@ -116,14 +122,15 @@ class Operator(ABC):
         self._generate_candidate_sbp_signatures()
         assert len(self._candidate_sbp_signatures) > 0
     
-    def find_best_sbp_signature(self, arch_config: ArchConfig, inter_layer_sbp_signatures: Dict[str, SbpSignature] = {}
+    def find_best_sbp_signature(self, arch_config: ArchConfig, training_config:TrainingConfig,
+                                inter_sbp_sigs: Dict[str, SbpSignature] = {},
                                 ) -> Dict[str, SbpSignature]:
         assert self._candidate_sbp_signatures, "Derive candidate sbp signatures first!"
         best_cost = np.inf
         best_sbp_signatures = None
 
         for idx, sbp in enumerate(self._candidate_sbp_signatures):
-            cost = self.estimate_cost(sbp, arch_config, inter_layer_sbp_signatures)
+            cost = self.estimate_cost(sbp, inter_sbp_sigs, arch_config, training_config)
             if cost != np.inf:
                 if self.is_debug:
                     logger.debug(f"Cost = {int(cost):>10d}, for {idx}-th {sbp}")
@@ -209,11 +216,11 @@ class Operator(ABC):
     def get_bp_mac_count(self):
         raise NotImplementedError
 
-    def __estimate_latency_with_roofline_model(self, mac_count, sram_access_count, arch_config: ArchConfig):
+    def _estimate_latency_with_roofline_model(self, mac_count, sram_access_count, arch_config: ArchConfig):
         arithmetic_intensity = mac_count / sram_access_count
 
         compute_power = arch_config.get_compute_power()          # mac / cycle
-        memory_bandwidth = arch_config.get_memory_bandwidth()    # byte / cycle
+        memory_bandwidth = arch_config.get_sram_bandwidth()    # byte / cycle
         maximum_intensity = compute_power / memory_bandwidth     # mac / byte
 
         if arithmetic_intensity < maximum_intensity:

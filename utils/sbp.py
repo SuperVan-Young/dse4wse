@@ -84,8 +84,10 @@ def get_sbp_parallel_from_str(s: str) -> SbpParallel:
         raise RuntimeError("Invalid sbp parallel str %s" % (s,))
     
 class Placement():
-    def __init__(self, shape: Tuple[int], interconnect_types: Tuple[int]) -> None:
+    def __init__(self, shape: Tuple[int], interconnect_types: Tuple[int] = None) -> None:
         self.shape = shape
+        if interconnect_types == None:
+            interconnect_types = ['noc'] * len(shape)  # TODO: leave it for the future
         self.interconnect_types = interconnect_types
 
     def __eq__(self, __value: object) -> bool:
@@ -187,7 +189,11 @@ def get_grad_sbp_signature(sbp_signature: SbpSignature) -> SbpSignature:
 def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSignature, cur_sbp_sig: SbpSignature, arch_config: ArchConfig) -> float:
     """Estimate communication cost of rearranging global tensor on the same device, without allocating more memory
     """
-    assert prev_sbp_sig is not None
+    if tensor_info.inplace:
+        return 0
+    else:
+        assert prev_sbp_sig is not None
+        assert cur_sbp_sig is not None
     assert prev_sbp_sig.placement.shape == cur_sbp_sig.placement.shape
     placement = prev_sbp_sig.placement
 

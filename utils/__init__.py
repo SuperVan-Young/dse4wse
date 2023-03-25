@@ -20,6 +20,7 @@ from sbp import (
 from tensor_info import (
     TensorInfo,
     multidirectional_broadcasting,
+    transpose,
 )
 from split import (
     factoring,

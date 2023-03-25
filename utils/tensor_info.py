@@ -26,7 +26,7 @@ def onnx_dtype_2_storage_size(dtype: int) -> int:
 class TensorInfo():
     def __init__(self, name: str, shape: Tuple, onnx_dtype: int, kind: str, inplace=False) -> None:
         self.name = name
-        self.shape = shape
+        self.shape = tuple(shape)
         self.onnx_dtype = onnx_dtype
         self.kind = kind
         self.inplace = inplace  # comm cost on same device for inplace tensor is always 0
@@ -63,6 +63,13 @@ def multidirectional_broadcasting(A_shape: Tuple[int], B_shape: Tuple[int]) -> T
             assert a == 1 or b == 1
             C_shape.append(max(a, b))
     return C_shape
+
+def transpose(shape: Tuple[int], dim0, dim1) -> Tuple[int]:
+    shape = list(shape)
+    tmp = shape[dim0]
+    shape[dim0] = shape[dim1]
+    shape[dim1] = tmp
+    return tuple(shape)
 
 if __name__ == "__main__":
     print(onnx_dtype_2_storage_size(0))

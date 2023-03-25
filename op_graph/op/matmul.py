@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from base import Operator
 from utils import (
     ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, 
-    BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info
+    BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info, TrainingConfig
 )
 
 class MatMulOperator(Operator):
@@ -50,7 +50,7 @@ class MatMulOperator(Operator):
     def __get_matmul_mac_count(self, shape0, shape1):
         stack_shape = multidirectional_broadcasting(shape0[:-2], shape1[:-2])
         M, K0, K1, N = shape0[-2], shape0[-1], shape1[-2], shape1[-1]
-        assert K0 == K1
+        assert K0 == K1, f"{K0} != {K1}"
         return reduce(lambda x, y: x * y, stack_shape + [M, K1, N])
     
     def __get_matmul_sram_access_count(self, shape0, shape1):
@@ -72,18 +72,19 @@ class MatMulOperator(Operator):
         B_local = get_local_tensor_info(B_info, intra_sbp_sigs['B'])
         mac_count = self.get_fp_mac_count()
         sram_access_count = self.__get_matmul_sram_access_count(A_local.shape, B_local.shape)
-        return self.__estimate_latency_with_roofline_model(mac_count, sram_access_count)
+        return self._estimate_latency_with_roofline_model(mac_count, sram_access_count, arch_config)
 
     def get_bp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
         A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
         A_local = get_local_tensor_info(A_info, intra_sbp_sigs['A'])
         B_local = get_local_tensor_info(B_info, intra_sbp_sigs['B'])
+        Y_local = get_local_tensor_info(Y_info, intra_sbp_sigs['Y'])
         shape_A_transpose = transpose(A_local.shape, -2, -1)
         shape_B_transpose = transpose(B_local.shape, -2, -1)
-        bp_A_sram_access = self.__get_matmul_sram_access_count(shape_A_transpose, Y_info.shape)
-        bp_B_sram_access = self.__get_matmul_mac_count(Y_info.shape, shape_B_transpose)
-        return self.__estimate_latency_with_roofline_model(self.__get_bp_A_mac_count(), bp_A_sram_access) \
-             + self.__estimate_latency_with_roofline_model(self.__get_bp_B_mac_count(), bp_B_sram_access) 
+        bp_A_sram_access = self.__get_matmul_sram_access_count(shape_A_transpose, Y_local.shape)
+        bp_B_sram_access = self.__get_matmul_mac_count(Y_local.shape, shape_B_transpose)
+        return self._estimate_latency_with_roofline_model(self.__get_bp_A_mac_count(), bp_A_sram_access, arch_config) \
+             + self._estimate_latency_with_roofline_model(self.__get_bp_B_mac_count(), bp_B_sram_access, arch_config) 
 
     def _generate_candidate_sbp_signatures(self) -> None:
         candidate_sbp_signatures = []
@@ -207,23 +208,26 @@ if __name__ == "__main__":
     input_tensors = {
         'A': TensorInfo(
             name='test_A',
-            shape=(1, 12, 512, 768),
-            onnx_dtype=1,
+            shape=(1, 512, 768),
+            onnx_dtype=10,
             kind='input',
+            inplace=True,
         ),
         'B': TensorInfo(
             name='test_B',
             shape=(768, 768),
-            onnx_dtype=1,
+            onnx_dtype=10,
             kind='weight',
+            inplace=True
         ),
     }
     output_tensors = {
         'Y': TensorInfo(
             name='test_B',
-            shape=(1, 12, 512, 768),
-            onnx_dtype=1,
+            shape=(1, 512, 768),
+            onnx_dtype=10,
             kind='activation',
+            inplace=True
         )
     }
     matmul_op = MatMulOperator(
@@ -250,4 +254,6 @@ if __name__ == "__main__":
         'inter_reticle_bandwidth': 1024,
         'inter_wafer_bandwidth': 256,
     })
-    best_sbp = matmul_op.find_best_sbp_signature(arch_config=arch_config)
+    training_config = TrainingConfig()
+    matmul_op.is_debug = True
+    best_sbp = matmul_op.find_best_sbp_signature(arch_config=arch_config, training_config=training_config)
