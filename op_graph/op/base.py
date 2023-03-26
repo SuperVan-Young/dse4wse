@@ -131,8 +131,9 @@ class Operator(ABC):
         bp_sram_util = self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config) + self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config)
         # fp uses less sram than bp, thus is ignored
         # temp buffer for dynamic broadcasting is ignored
-        logger.debug(f"bp_sram_util   : {int(bp_sram_util):>15d}")
-        logger.debug(f"available sram : {available_sram:>15d}")
+        if self.debug:
+            logger.debug(f"bp_sram_util   : {int(bp_sram_util):>15d}")
+            logger.debug(f"available sram : {available_sram:>15d}")
         if bp_sram_util <= available_sram:
             return 0
         else:

@@ -11,7 +11,7 @@ from op_graph.module import AttentionModule
 from utils import ArchConfig, logger
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--case', metavar='N', type=int, default=0)
+parser.add_argument('--case', metavar='N', type=int, default=7)
 
 # Megatron uses #Tensor_parallel x #data_parallel GPU for one pipeline stage (roughly 1~2 layers)
 # We use similar setup for the model size
@@ -68,6 +68,9 @@ def test_attention_module(
 
     attention_module.alloc_core_and_derive_sbp_sig(arch_config)
 
+    logger.warning("Using GPU-like mode for attention module")
+    attention_module.gpu_like = True
+
     training_throughput = attention_module.get_training_throughput(arch_config)
 
     logger.info(f"Training throughput: {training_throughput} sequence / second")
@@ -89,5 +92,10 @@ def run_testcase(case=1):
     test_attention_module(**megatron_config)
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    run_testcase(args.case)
+    # args = parser.parse_args()
+    # run_testcase(args.case)
+    for i in range(10):
+        try:
+            run_testcase(i)
+        except:
+            logger.warning(f"Failure in experiment {i}")
