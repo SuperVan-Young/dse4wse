@@ -235,7 +235,7 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
             assert False
 
     # Handle virtual transform
-    local_tensor_shape = get_local_tensor_info(tensor_info, cur_sbp_sig).shape
+    local_tensor_shape = list(get_local_tensor_info(tensor_info, cur_sbp_sig).shape)
     for dim in virtual_transform_dims:
         dim_value = placement.shape[dim]
         assert local_tensor_shape[dim] % dim_value == 0

@@ -55,15 +55,16 @@ class Operator(ABC):
             @param inter_sbp_sigs: input/output sbp externally seen by boxing. 
         """
         if self.debug:
-            logger.debug(f"Estimating cost for SBP signature:")
-            logger.debug(f"    intra sbp signatures: {intra_sbp_sigs}")
-            logger.debug(f"    inter sbp signatures: {inter_sbp_sigs}")
+            logger.debug(f"Operator {self.name} is estimating cost for SBP signature:")
+            logger.debug(f"intra sbp signatures: {intra_sbp_sigs}")
+            logger.debug(f"inter sbp signatures: {inter_sbp_sigs}")
             
         transmission_cost = self.estimate_transmission_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config)
         compute_cost = self.estimate_compute_cost(intra_sbp_sigs, arch_config)
         sram_cost = self.estimate_sram_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config, training_config)
         
         if self.debug:
+            logger.debug(f"Summary")
             logger.debug(f"Transmission cost : {int(transmission_cost):>20}")
             logger.debug(f"Compute cost      : {int(compute_cost):>20}")
             logger.debug(f"SRAM cost         : {(0 if sram_cost == 0 else 'INF'):>20}")
@@ -85,13 +86,16 @@ class Operator(ABC):
         Transmission for both input and output cannot be overlapped with compute for quick impl.
         Inter/intra input sbp signature need to have the same placement (unless this is a boxing operator).
         """
+        if self.debug:
+            logger.debug(f"Estimating transmission cost: ")
+
         comm_input_cost = 0
         for local_name, tensor_info in self.input_tensors.items():
             cur_sbp_sig = intra_sbp_sigs[local_name]
             prev_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_input_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
-            # if self.debug:
-            #     logger.debug(f"    comm input cost = {comm_input_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
+            if self.debug:
+                logger.debug(f"comm input cost = {comm_input_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
 
         comm_output_cost = 0
         derived_output_sbp_signatures = derive_output_sbp_signatures(intra_sbp_sigs, self._rule_table)
@@ -99,8 +103,8 @@ class Operator(ABC):
             prev_sbp_sig = derived_output_sbp_signatures[local_name]
             cur_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_output_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
-            # if self.debug:
-            #     logger.debug(f"    comm output cost = {comm_output_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
+            if self.debug:
+                logger.debug(f"comm output cost = {comm_output_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
         
         return comm_input_cost + comm_output_cost
     
@@ -109,19 +113,20 @@ class Operator(ABC):
         We leave it to operators impl to consider SRAM bandwidth
         We ignore the effect of overlapping compute with transmission.
         """
+        if self.debug:
+            logger.debug(f"Estimating compute cost: ")
         fp_latency = self.get_fp_latency(intra_sbp_sigs, arch_config)
         bp_latency = self.get_bp_latency(intra_sbp_sigs, arch_config)
         if self.debug:
-            logger.debug(f"FP latency: {fp_latency}")
-            logger.debug(f"BP latency: {bp_latency}")
+            logger.debug(f"FP latency: {int(fp_latency)} cycles")
+            logger.debug(f"BP latency: {int(bp_latency)} cycles")
         return fp_latency + bp_latency
 
     def estimate_sram_cost(self, intra_sbp_sigs: Dict[str, SbpSignature], inter_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig, training_config: TrainingConfig) -> float:
         """Check if SRAM is enough
         """
-        #FIXME: comm_on_same_devices introduces no extra memory cost
-        # sram utilization should use inter sbp for input and intra sbp for output
-        # after this adjustment, some intra sbp might be valid
+        if self.debug:
+            logger.debug(f"Estimating SRAM cost: ")
         available_sram = arch_config.get_sram_size()
         bp_sram_util = self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config) + self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config)
         # fp uses less sram than bp, thus is ignored
@@ -130,7 +135,9 @@ class Operator(ABC):
             return 0
         else:
             if self.debug:
-                logger.debug(f"bp_sram_util {bp_sram_util} > available sram {available_sram}")
+                logger.debug(f"SRAM is not enough!")
+                logger.debug(f"bp_sram_util: {int(bp_sram_util):>15d}")
+                logger.debug(f"available sram: {available_sram:>15d}")
             return np.inf
 
     def generate_candidate_intra_sbp_sigs(self):

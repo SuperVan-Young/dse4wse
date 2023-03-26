@@ -71,7 +71,7 @@ class OpGraph(DiGraph):
             succ_inter_sbp_sig = succ_op.final_inter_sbp_sigs[succ_local_name]
             tensor = prev_op.output_tensors[prev_local_name]
 
-            if prev_inter_sbp_sig.placement == succ_inter_sbp_sig.placememt:
+            if prev_inter_sbp_sig.placement == succ_inter_sbp_sig.placement:
                 return calc_comm_cost_on_same_devices(tensor, prev_inter_sbp_sig, succ_inter_sbp_sig, arch_config)
             else:
                 raise NotImplementedError

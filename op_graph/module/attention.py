@@ -8,8 +8,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from itertools import chain
 
 from graph import OpGraph, build_op_graph_from_operator_list
-from op import MatMulOperator
-from utils import TensorInfo, TrainingConfig, ArchConfig
+from op import MatMulOperator, Operator
+from utils import TensorInfo, TrainingConfig, ArchConfig, logger
 
 BFLOAT16 = 10
 
@@ -171,6 +171,32 @@ class AttentionModule():
             activation_checkpoint={}
         )
         return config
+    
+    def alloc_core_and_derive_sbp_sig(self, arch_config: ArchConfig):
+        """Naive sbp derivation for the operation.
+
+        core allocation: each operator use all cores
+        sbp derivation: no consideration on intra_sbp_sig boxing cost
+        """
+        for name, op in self._op_graph.nodes(data='operator'):
+            op:Operator
+            op.num_core_range = list(range(1, arch_config.get_total_cores() + 1))
+            op.debug = True
+            op.generate_candidate_intra_sbp_sigs()
+            intra_sbp_sigs, inter_sbp_sigs = op.find_best_sbp_signature(arch_config, self._training_config, {})
+            op.final_intra_sbp_sigs = intra_sbp_sigs
+            op.final_inter_sbp_sigs = inter_sbp_sigs
+
+    def get_training_throughput(self, arch_config: ArchConfig):
+        """ in terms of sequence per second
+        """
+        single_stage_fp_latency = self.get_fp_latency(arch_config)
+        single_stage_bp_latency = self.get_bp_latency(arch_config)
+        pipeline_factor = self.number_of_layers + (self.mini_batch_size // self.micro_batch_size - 1)
+        whole_batch_latency = pipeline_factor * (single_stage_bp_latency + single_stage_fp_latency)  # cycles
+        whole_batch_time = whole_batch_latency / arch_config.get_core_frequency()                    # seconds
+        sequence_per_second = self.mini_batch_size / whole_batch_time
+        return sequence_per_second
 
     def get_fp_latency(self, arch_config: ArchConfig):
         inter_wafer_bandwidth = arch_config.get_interconnect_bandwidth('wafer')
@@ -193,11 +219,11 @@ class AttentionModule():
         return total_latency
     
     def get_bp_latency(self, arch_config: ArchConfig):
-        reticle_cluster_boundary_size = max(arch_config.get_reticle_array_height(), arch_config.get_reticle_array_width())
+        reticle_cluster_boundary_size = max(arch_config.get_array_size('reticle_height'), arch_config.get_array_size('reticle_width'))
         inter_reticle_bandwidth = arch_config.get_interconnect_bandwidth('reticle')
         inter_worker_cluster_bandwidth = reticle_cluster_boundary_size * inter_reticle_bandwidth
         inter_wafer_bandwidth = arch_config.get_interconnect_bandwidth('wafer')
-        dram_bandwidth = arch_config.get_dram_bandwidth()
+        dram_bandwidth = arch_config.get_wafer_dram_bandwidth()
 
         # fetch grad from successive wafer once and broadcast to all data parallel 'worker'
         grad_tensors = self._op_graph.get_tensors(kind=['output'])
@@ -224,15 +250,17 @@ class AttentionModule():
         # compute and swap weight can be overlapped
         total_latency = max(grad_total_latency, rematerialization_total_latency) + max(op_graph_bp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
     
+        return total_latency
+
     def _swap_weight_latency(self, arch_config: ArchConfig):
         
-        dram_bandwidth = arch_config.get_dram_bandwidth()
+        dram_bandwidth = arch_config.get_wafer_dram_bandwidth()
 
         weight_tensors = self._op_graph.get_tensors(kind=['weight'])
         weight_tensor_total_size = sum([tensor.size() for tensor in weight_tensors.values()])
         weight_dram_aceess_latency = weight_tensor_total_size / dram_bandwidth
 
-        reticle_cluster_boundary_size = max(arch_config.get_reticle_array_height(), arch_config.get_reticle_array_width())
+        reticle_cluster_boundary_size = max(arch_config.get_array_size('reticle_height'), arch_config.get_array_size('reticle_width'))
         inter_reticle_bandwidth = arch_config.get_interconnect_bandwidth('reticle')
         inter_worker_cluster_bandwidth = reticle_cluster_boundary_size * inter_reticle_bandwidth
 

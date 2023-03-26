@@ -9,6 +9,7 @@ class ArchConfig(UserDict):
 
     Parameters:
     - Core level:
+        - core_frequency
         - core_num_mac: number of MAC units
         - core_sram_size: local SRAM size (bytes)
         - core_sram_bandwidth: local SRAM bandwidth (bytes/cycle)
@@ -29,6 +30,7 @@ class ArchConfig(UserDict):
     def __init__(self, data: Dict) -> None:
         self.data = data
         for key in [
+            'core_frequency',
             'core_num_mac',
             'core_sram_size',
             'core_sram_bandwidth',
@@ -65,6 +67,9 @@ class ArchConfig(UserDict):
         brief_config = [f"{get_brief_name(name)}{val}" for name, val in self.data.items()]
         brief_config = "_".join(brief_config)
         return brief_config
+    
+    def get_core_frequency(self) -> int:
+        return self.data['core_frequency']
     
     def get_compute_power(self) -> int:
         """Single core computation power, in terms of Operation/Cycle.
@@ -131,4 +136,4 @@ class ArchConfig(UserDict):
             self.data['core_array_height'],
             self.data['core_array_width'],
         ])
-        return total_cores
+        return int(total_cores)

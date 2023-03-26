@@ -46,24 +46,27 @@ def test_attention_module(
     # similar hardware resources like Megatron-2 paper setup for corresponding model
     # assume 1Ghz frequency
     arch_config = ArchConfig({
+        'core_frequency': 1e9,              # 1GHz
         'core_num_mac': 312000,              # A100 FP16 312 TFLOPS
         'core_sram_size': 40 * 1024 * 1024,  # 40MB L2 cache
         'core_sram_bandwidth': 4830,         # 2.3x 2.1TB/s (V100)
         'inter_core_bandwidth': 7 * 600,     # same with reticle    
         'core_array_height': 1,
-        'core_array_width': tensor_parallel_size,
+        'core_array_width': 1,
         'inter_reticle_bandwidth': 7 * 600,  # 7x NVLink 3.0 x 12 ports
         'reticle_array_height': 1,           # data parallel size is considered within attn module
-        'reticle_array_width': tensor_parallel_size,
+        'reticle_array_width': int(tensor_parallel_size),
         'wafer_dram_size': data_parallel_size * tensor_parallel_size * 80e9,
         'wafer_dram_bandwidth': 1.94e3,      # 1.94TB/s HBM      
         'wafer_dram_stacking_type': '2d',
         'inter_wafer_bandwidth': 25,         # 200Gb/s infiniband
     })
 
-    attention_module.get_fp_latency(arch_config)
+    attention_module.alloc_core_and_derive_sbp_sig(arch_config)
 
-    attention_module.get_bp_latency(arch_config)
+    training_throughput = attention_module.get_training_throughput(arch_config)
+
+    logger.info(f"Training throughput: {training_throughput} sequence / second")
 
 def run_testcase(index=0):
     df = pd.read_excel(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'megatron.xlsx'))
@@ -74,7 +77,7 @@ def run_testcase(index=0):
 
     megatron_config = megatron_config.to_dict()
     megatron_config['sequence_length'] = 2048
-    megatron_config['micro_batch_size'] = 32
+    megatron_config['micro_batch_size'] = 1 # the smallest size ...
     megatron_config['data_parallel_size'] = megatron_config['number_of_gpus'] // megatron_config['model_parallel_size'] // megatron_config['tensor_parallel_size']
 
     test_attention_module(**megatron_config)
