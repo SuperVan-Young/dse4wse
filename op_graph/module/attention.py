@@ -23,7 +23,8 @@ class AttentionModule():
                  mini_batch_size: int,
                  number_of_layers: int,  # total
                  data_parallel_size: int,
-                 pipeline_model_parallel_size: int,
+                 model_parallel_size: int,
+                 tensor_parallel_size: int,
                  swap_weight_timesteps: int,
                  ) -> None:
         self.attention_heads = attention_heads
@@ -32,8 +33,11 @@ class AttentionModule():
         self.micro_batch_size = micro_batch_size
         self.mini_batch_size = mini_batch_size
         self.number_of_layers = number_of_layers
-        self.pipeline_model_parallel_size = pipeline_model_parallel_size
         self.data_parallel_size = data_parallel_size
+        self.model_parallel_size = model_parallel_size
+        self.tensor_parallel_size = tensor_parallel_size
+        assert number_of_layers % model_parallel_size == 0
+        self.layer_of_pipeline_stage = number_of_layers // model_parallel_size
         self.swap_weight_timesteps = swap_weight_timesteps
 
         self._op_graph = self._build_op_graph()
@@ -169,11 +173,74 @@ class AttentionModule():
         return config
 
     def get_fp_latency(self, arch_config: ArchConfig):
-        # fetch activation from previous wafer
         inter_wafer_bandwidth = arch_config.get_interconnect_bandwidth('wafer')
+
+        # fetch activation from previous wafer for data parallel times
         input_tensors = self._op_graph.get_tensors(kind=['input'])
-        input_tensor_total_size = sum([tensor.size() for tensor in input_tensors.values()])
-        input_comm_latency = input_tensor_total_size / inter_wafer_bandwidth
+        input_tensor_total_size = sum([tensor.size() for tensor in input_tensors.values()]) * self.data_parallel_size
+        input_cross_wafer_latency = input_tensor_total_size / inter_wafer_bandwidth
 
         # compute for #swap_weight_timesteps
-        op_graph_fp_latency = self._op_graph.get_fp_latency()
+        op_graph_fp_latency = self._op_graph.get_propagation_latency(arch_config, forward=True) * self.swap_weight_timesteps
+
+        # load weight from DRAM once and all-gather for all data-parallel 'workers'
+        swap_weight_latency = self._swap_weight_latency(arch_config)
+
+        # compute and swap weight can be overlapped
+        # comm cost for output on same device is ignored 
+        total_latency = input_cross_wafer_latency + max(op_graph_fp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
+
+        return total_latency
+    
+    def get_bp_latency(self, arch_config: ArchConfig):
+        reticle_cluster_boundary_size = max(arch_config.get_reticle_array_height(), arch_config.get_reticle_array_width())
+        inter_reticle_bandwidth = arch_config.get_interconnect_bandwidth('reticle')
+        inter_worker_cluster_bandwidth = reticle_cluster_boundary_size * inter_reticle_bandwidth
+        inter_wafer_bandwidth = arch_config.get_interconnect_bandwidth('wafer')
+        dram_bandwidth = arch_config.get_dram_bandwidth()
+
+        # fetch grad from successive wafer once and broadcast to all data parallel 'worker'
+        grad_tensors = self._op_graph.get_tensors(kind=['output'])
+        grad_tensors_total_size = sum([tensor.size() for tensor in grad_tensors.values()])
+        grad_cross_wafer_latency = grad_tensors_total_size / inter_wafer_bandwidth
+        grad_broadcast_latency = (self.data_parallel_size - 1) * grad_tensors_total_size / inter_worker_cluster_bandwidth
+        grad_total_latency = grad_cross_wafer_latency + grad_broadcast_latency
+
+        # rematerialize activation, similar to fp
+        assert self._training_config.activation_checkpoint == {}, "Currently not support fine granularity rematerialization"
+        input_tensors = self._op_graph.get_tensors(kind=['input'])
+        input_tensor_total_size = sum([tensor.size() for tensor in input_tensors.values()]) * self.data_parallel_size
+        input_dram_latency = input_tensor_total_size / dram_bandwidth
+
+        op_graph_fp_latency = self._op_graph.get_propagation_latency(arch_config, forward=True) * self.swap_weight_timesteps
+        swap_weight_latency = self._swap_weight_latency(arch_config)
+
+        rematerialization_total_latency = input_dram_latency + max(op_graph_fp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
+
+        # compute for # swap_weight_timesteps
+        op_graph_bp_latency = self._op_graph.get_propagation_latency(arch_config, forward=False) * self.swap_weight_timesteps
+
+        # rematerilization and fetch grad can be overlapped
+        # compute and swap weight can be overlapped
+        total_latency = max(grad_total_latency, rematerialization_total_latency) + max(op_graph_bp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
+    
+    def _swap_weight_latency(self, arch_config: ArchConfig):
+        
+        dram_bandwidth = arch_config.get_dram_bandwidth()
+
+        weight_tensors = self._op_graph.get_tensors(kind=['weight'])
+        weight_tensor_total_size = sum([tensor.size() for tensor in weight_tensors.values()])
+        weight_dram_aceess_latency = weight_tensor_total_size / dram_bandwidth
+
+        reticle_cluster_boundary_size = max(arch_config.get_reticle_array_height(), arch_config.get_reticle_array_width())
+        inter_reticle_bandwidth = arch_config.get_interconnect_bandwidth('reticle')
+        inter_worker_cluster_bandwidth = reticle_cluster_boundary_size * inter_reticle_bandwidth
+
+        all_gather_round = (self.swap_weight_timesteps + self.data_parallel_size - 1) // self.data_parallel_size
+        weight_all_gather_size_per_round = weight_tensor_total_size / self.swap_weight_timesteps * (self.data_parallel_size - 1)
+        weight_all_gather_total_size = weight_all_gather_size_per_round * all_gather_round 
+        weight_all_gather_latency = weight_all_gather_total_size / inter_worker_cluster_bandwidth
+
+        return weight_dram_aceess_latency + weight_all_gather_latency
+    
+    

@@ -90,8 +90,8 @@ class Operator(ABC):
             cur_sbp_sig = intra_sbp_sigs[local_name]
             prev_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_input_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
-            if self.debug:
-                logger.debug(f"    comm input cost = {comm_input_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
+            # if self.debug:
+            #     logger.debug(f"    comm input cost = {comm_input_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
 
         comm_output_cost = 0
         derived_output_sbp_signatures = derive_output_sbp_signatures(intra_sbp_sigs, self._rule_table)
@@ -99,8 +99,8 @@ class Operator(ABC):
             prev_sbp_sig = derived_output_sbp_signatures[local_name]
             cur_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_output_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
-            if self.debug:
-                logger.debug(f"    comm output cost = {comm_output_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
+            # if self.debug:
+            #     logger.debug(f"    comm output cost = {comm_output_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
         
         return comm_input_cost + comm_output_cost
     

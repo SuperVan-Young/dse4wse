@@ -2,6 +2,7 @@
 from typing import Dict
 from collections import UserDict
 from functools import reduce
+import numpy as np
 
 class ArchConfig(UserDict):
     def __init__(self, data: Dict) -> None:
@@ -58,6 +59,15 @@ class ArchConfig(UserDict):
         else:
             raise NotImplementedError
         
+    def get_dram_size(self) -> int:
+        return np.inf
+    
+    def get_dram_bandwidth(self) -> int:
+        """ In Bytes
+        """
+        #TODO: 2d-DRAM and 3d-DRAM difference?
+        return self.data['dram_bandwidth']
+        
     def get_total_cores(self) -> int:
         total_cores = reduce(lambda x, y: x * y, [
             self.data['reticle_array_height'],
@@ -66,6 +76,12 @@ class ArchConfig(UserDict):
             self.data['core_array_width'],
         ])
         return total_cores
+    
+    def get_reticle_array_height(self):
+        return self.data['reticle_array_height']
+    
+    def get_reticle_array_width(self):
+        return self.data['reticle_array_width']
     
 if __name__ == "__main__":
     # Here's an example configuration for our WSE
