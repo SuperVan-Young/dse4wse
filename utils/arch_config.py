@@ -47,6 +47,7 @@ class ArchConfig(UserDict):
     
     def get_interconnect_bandwidth(self, connect_type='noc'):
         """In terms of Byte/Cycle
+        Supported connect_type: noc, reticle, wafer
         """
         if connect_type == 'noc':
             return self.data['noc_bandwidth']

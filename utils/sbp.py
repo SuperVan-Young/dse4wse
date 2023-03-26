@@ -79,7 +79,7 @@ def get_sbp_parallel_from_str(s: str) -> SbpParallel:
         return PartialSbpParallel()
     elif split_match:
         dim = split_match.group(1)
-        return SplitSbpParallel(dim=dim)
+        return SplitSbpParallel(dim=int(dim))
     else:
         raise RuntimeError("Invalid sbp parallel str %s" % (s,))
     
@@ -212,7 +212,7 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
         if prev_parallel.is_split():
             if cur_parallel.is_split():
                 if prev_parallel.dim != cur_parallel.dim:
-                    static_comm_cost += (dim_value - 1) / dim_value * global_tensor_size / bandwidth
+                    static_comm_cost += int(dim_value - 1)  * int(global_tensor_size / dim_value / bandwidth)
             elif cur_parallel.is_broadcast():
                 virtual_transform_dims.append(dim)
             elif cur_parallel.is_partial():
@@ -226,9 +226,9 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
             # Neglecting input-stationary dataflow is fine, if only considering mem limitation on output tensor.
             # There're other sbp signatures that only store single copy of output tensor
             if cur_parallel.is_split():
-                static_comm_cost += (dim_value - 1) / dim_value * global_tensor_size / bandwidth
+                static_comm_cost += int(dim_value - 1)  * int(global_tensor_size / dim_value / bandwidth)
             elif cur_parallel.is_broadcast():
-                static_comm_cost += 2 * (dim_value - 1) / dim_value * global_tensor_size / bandwidth
+                static_comm_cost += 2 * int(dim_value - 1)  * int(global_tensor_size / dim_value / bandwidth)
             else:
                 continue
         else:
@@ -242,8 +242,8 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
         local_tensor_shape[dim] //= dim_value
     local_tensor_size = reduce(lambda x, y: x * y, local_tensor_shape)
 
-    def calc_nested_loop_transmission_cost(info_array):
-        iterations, bandwidths = zip(*info_array)
+    def calc_nested_loop_transmission_cost(info_array_):
+        iterations, bandwidths = zip(*info_array_)
         iterations = np.cumprod(iterations)
         bandwidths = np.array(bandwidths)
         return np.sum(iterations / bandwidths)
@@ -251,12 +251,16 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
     info_array = zip(
         [placement.shape[dim] for dim in virtual_transform_dims],
         [arch_config.get_interconnect_bandwidth(placement.interconnect_types[dim]) for dim in virtual_transform_dims])
-    minimum_virtual_transform_cost = local_tensor_size * min(
-        calc_nested_loop_transmission_cost(info_array_)
-        for info_array_ in permutations(info_array, len(info_array))
-    )
+    if len(virtual_transform_dims):
+        minimum_virtual_transform_cost = local_tensor_size * min(
+            calc_nested_loop_transmission_cost(info_array_)
+            for info_array_ in permutations(info_array, len(virtual_transform_dims))
+        )
+    else:
+        minimum_virtual_transform_cost = 0
 
     total_cost = static_comm_cost + minimum_virtual_transform_cost
+
     return total_cost
 
 

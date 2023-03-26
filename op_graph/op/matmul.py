@@ -10,7 +10,7 @@ from functools import reduce
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from base import Operator
 from utils import (
-    ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, 
+    ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, PartialSbpParallel,
     BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info, TrainingConfig
 )
 
@@ -86,7 +86,7 @@ class MatMulOperator(Operator):
         return self._estimate_latency_with_roofline_model(self.__get_bp_A_mac_count(), bp_A_sram_access, arch_config) \
              + self._estimate_latency_with_roofline_model(self.__get_bp_B_mac_count(), bp_B_sram_access, arch_config) 
 
-    def _generate_candidate_sbp_signatures(self) -> None:
+    def _generate_candidate_intra_sbp_sigs(self) -> None:
         candidate_sbp_signatures = []
 
         A_info, B_info, Y_info = self.input_tensors['A'], self.input_tensors['B'], self.output_tensors['Y']
@@ -128,7 +128,7 @@ class MatMulOperator(Operator):
                         placement,
                         [ SplitSbpParallel(Y_dim_M),
                           SplitSbpParallel(Y_dim_N),
-                          BroadcastSbpParallel(),  # Partial -> Broadcast
+                          PartialSbpParallel(),
                         ] + [SplitSbpParallel(dim) for dim in stack_split_dims]
                     )
                     A_sbp_sig = SbpSignature(
@@ -152,7 +152,7 @@ class MatMulOperator(Operator):
                     }
                     candidate_sbp_signatures.append(sbp_signatures)
         
-        self._candidate_sbp_signatures = candidate_sbp_signatures
+        self._candidate_intra_sbp_sigs = candidate_sbp_signatures
     
     @property
     def _rule_table(self) -> pd.DataFrame:
@@ -204,7 +204,7 @@ class MatMulOperator(Operator):
 
         return pd.DataFrame(data, index=index)
     
-if __name__ == "__main__":
+def get_linear_testcase():
     input_tensors = {
         'A': TensorInfo(
             name='test_A',
@@ -223,13 +223,45 @@ if __name__ == "__main__":
     }
     output_tensors = {
         'Y': TensorInfo(
-            name='test_B',
+            name='test_Y',
             shape=(1, 512, 768),
             onnx_dtype=10,
             kind='activation',
             inplace=True
         )
     }
+    return input_tensors, output_tensors
+
+def get_attention_testcase():
+    input_tensors = {
+        'A': TensorInfo(
+            name='test_A',
+            shape=(1, 12, 512, 64),
+            onnx_dtype=10,
+            kind='input',
+            inplace=False,
+        ),
+        'B': TensorInfo(
+            name='test_B',
+            shape=(1, 12, 64, 512),
+            onnx_dtype=10,
+            kind='input',
+            inplace=False,
+        ),
+    }
+    output_tensors = {
+        'Y': TensorInfo(
+            name='test_Y',
+            shape=(1, 12, 512, 512),
+            onnx_dtype=10,
+            kind='activation',
+            inplace=False,
+        )
+    }
+    return input_tensors, output_tensors
+    
+if __name__ == "__main__":
+    input_tensors, output_tensors = get_attention_testcase()
     matmul_op = MatMulOperator(
         'test_matmul',
         'MatMul',
@@ -237,8 +269,7 @@ if __name__ == "__main__":
         output_tensors=output_tensors
     )
     matmul_op.num_core_range = list(range(16384, 16384 + 1))
-    matmul_op.generate_candidate_sbp_signatures()
-    print(matmul_op._candidate_sbp_signatures)
+    matmul_op.generate_candidate_intra_sbp_sigs()
 
     arch_config = ArchConfig({
         'core_num_mac': 32,
@@ -255,5 +286,5 @@ if __name__ == "__main__":
         'inter_wafer_bandwidth': 256,
     })
     training_config = TrainingConfig()
-    matmul_op.is_debug = True
+    matmul_op.debug = True
     best_sbp = matmul_op.find_best_sbp_signature(arch_config=arch_config, training_config=training_config)

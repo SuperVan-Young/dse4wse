@@ -7,12 +7,14 @@ import math
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Container, Union
-from itertools import chain
+from itertools import chain, combinations, combinations_with_replacement
+from copy import deepcopy
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utils import (
     ArchConfig, SbpSignature, TensorInfo, calc_comm_cost_on_same_devices,
-    derive_output_sbp_signatures, logger, get_local_tensor_info, TrainingConfig
+    derive_output_sbp_signatures, logger, get_local_tensor_info, TrainingConfig,
+    SplitSbpParallel, BroadcastSbpParallel
 )
 
 class Operator(ABC):
@@ -31,15 +33,17 @@ class Operator(ABC):
         self.op_type = op_type
         self.input_tensors = input_tensors 
         self.output_tensors = output_tensors
-        self.is_debug = kwargs.get('debug', False)
+        self.debug = kwargs.get('debug', False)
 
         self.num_core_range : Container
         self.num_core_range = None
 
-        self.final_sbp_signatures : Dict[str, SbpSignature]  # tensor local name -> sbp_signature
-        self.final_sbp_signatures = {}
-        self._candidate_sbp_signatures: List[Dict[str, SbpSignature]]  # tensor local name -> sbp_signature
-        self._candidate_sbp_signatures = []
+        self.final_intra_sbp_sigs : Dict[str, SbpSignature]  # tensor local name -> sbp_signature
+        self.final_intra_sbp_sigs = {}
+        self.final_inter_sbp_sigs : Dict[str, SbpSignature]
+        self.final_inter_sbp_sigs = {}
+        self._candidate_intra_sbp_sigs: List[Dict[str, SbpSignature]]  # tensor local name -> sbp_signature
+        self._candidate_intra_sbp_sigs = []
 
     # estimate various cost
 
@@ -47,18 +51,19 @@ class Operator(ABC):
                        arch_config: ArchConfig, training_config: TrainingConfig, detailed_report=False) -> Union[float, Dict]:
         """Estimate total cost of sbp signatures.
 
-            @param intra_sbp_sigs: sbp signatures current operator uses, so that it doesn't need to consider inter op sbp sigs.
-            @param inter_sbp_sigs: input sbps and output sbps
-            @param arch_config: architecture description
+            @param intra_sbp_sigs: sbp internally seen by computation
+            @param inter_sbp_sigs: input/output sbp externally seen by boxing. 
         """
-        if self.is_debug:
-            logger.debug(f"Estimating cost for SBP signature {intra_sbp_sigs}")
+        if self.debug:
+            logger.debug(f"Estimating cost for SBP signature:")
+            logger.debug(f"    intra sbp signatures: {intra_sbp_sigs}")
+            logger.debug(f"    inter sbp signatures: {inter_sbp_sigs}")
             
         transmission_cost = self.estimate_transmission_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config)
         compute_cost = self.estimate_compute_cost(intra_sbp_sigs, arch_config)
-        sram_cost = self.estimate_sram_cost(intra_sbp_sigs, arch_config, training_config)
+        sram_cost = self.estimate_sram_cost(intra_sbp_sigs, inter_sbp_sigs, arch_config, training_config)
         
-        if self.is_debug:
+        if self.debug:
             logger.debug(f"Transmission cost : {int(transmission_cost):>20}")
             logger.debug(f"Compute cost      : {int(compute_cost):>20}")
             logger.debug(f"SRAM cost         : {(0 if sram_cost == 0 else 'INF'):>20}")
@@ -78,13 +83,15 @@ class Operator(ABC):
                                    arch_config: ArchConfig) -> float:
         """Estimate transmission latency.
         Transmission for both input and output cannot be overlapped with compute for quick impl.
-        Input tensors are required to be on the same devices (unless this is a boxing operator).
+        Inter/intra input sbp signature need to have the same placement (unless this is a boxing operator).
         """
         comm_input_cost = 0
         for local_name, tensor_info in self.input_tensors.items():
             cur_sbp_sig = intra_sbp_sigs[local_name]
             prev_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_input_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
+            if self.debug:
+                logger.debug(f"    comm input cost = {comm_input_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
 
         comm_output_cost = 0
         derived_output_sbp_signatures = derive_output_sbp_signatures(intra_sbp_sigs, self._rule_table)
@@ -92,6 +99,8 @@ class Operator(ABC):
             prev_sbp_sig = derived_output_sbp_signatures[local_name]
             cur_sbp_sig = inter_sbp_sigs.get(local_name, None)
             comm_output_cost += calc_comm_cost_on_same_devices(tensor_info, prev_sbp_sig, cur_sbp_sig, arch_config)
+            if self.debug:
+                logger.debug(f"    comm output cost = {comm_output_cost} for {prev_sbp_sig} -> {cur_sbp_sig}")
         
         return comm_input_cost + comm_output_cost
     
@@ -100,58 +109,123 @@ class Operator(ABC):
         We leave it to operators impl to consider SRAM bandwidth
         We ignore the effect of overlapping compute with transmission.
         """
-        return self.get_fp_latency(intra_sbp_sigs, arch_config) + self.get_bp_latency(intra_sbp_sigs, arch_config)
+        fp_latency = self.get_fp_latency(intra_sbp_sigs, arch_config)
+        bp_latency = self.get_bp_latency(intra_sbp_sigs, arch_config)
+        if self.debug:
+            logger.debug(f"FP latency: {fp_latency}")
+            logger.debug(f"BP latency: {bp_latency}")
+        return fp_latency + bp_latency
 
-    def estimate_sram_cost(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig, training_config: TrainingConfig) -> float:
+    def estimate_sram_cost(self, intra_sbp_sigs: Dict[str, SbpSignature], inter_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig, training_config: TrainingConfig) -> float:
         """Check if SRAM is enough
         """
+        #FIXME: comm_on_same_devices introduces no extra memory cost
+        # sram utilization should use inter sbp for input and intra sbp for output
+        # after this adjustment, some intra sbp might be valid
         available_sram = arch_config.get_sram_size()
-        bp_sram_util = self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, training_config) + self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, training_config)
+        bp_sram_util = self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config) + self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config)
         # fp uses less sram than bp, thus is ignored
         # temp buffer for dynamic broadcasting is ignored
         if bp_sram_util <= available_sram:
             return 0
         else:
-            if self.is_debug:
+            if self.debug:
                 logger.debug(f"bp_sram_util {bp_sram_util} > available sram {available_sram}")
             return np.inf
 
-    def generate_candidate_sbp_signatures(self):
+    def generate_candidate_intra_sbp_sigs(self):
         assert self.num_core_range != None
-        self._candidate_sbp_signatures = []
-        self._generate_candidate_sbp_signatures()
-        assert len(self._candidate_sbp_signatures) > 0
+        self._candidate_intra_sbp_sigs = []
+        self._generate_candidate_intra_sbp_sigs()
+        assert len(self._candidate_intra_sbp_sigs) > 0
     
     def find_best_sbp_signature(self, arch_config: ArchConfig, training_config:TrainingConfig,
                                 inter_sbp_sigs: Dict[str, SbpSignature] = {},
-                                ) -> Dict[str, SbpSignature]:
-        assert self._candidate_sbp_signatures, "Derive candidate sbp signatures first!"
+                                ) -> Tuple[Dict[str, SbpSignature]]:
+        """Find the best inter/intra sbp signatures.
+        If inter_sbp_sig is not specified, automatically find one with minimum mem footprint
+        """
+        assert self._candidate_intra_sbp_sigs, "Derive candidate sbp signatures first!"
         best_cost = np.inf
-        best_sbp_signatures = None
+        best_intra_sbp_sigs = None
+        best_inter_sbp_sigs = None
 
-        for idx, sbp in enumerate(self._candidate_sbp_signatures):
-            cost = self.estimate_cost(sbp, inter_sbp_sigs, arch_config, training_config)
-            if cost != np.inf:
-                if self.is_debug:
-                    logger.debug(f"Cost = {int(cost):>10d}, for {idx}-th {sbp}")
+        for idx, intra_sbp_sigs in enumerate(self._candidate_intra_sbp_sigs):
+            inter_sbp_sigs_ = deepcopy(inter_sbp_sigs)
+            inter_sbp_sigs_.update({name: inter_sbp_sigs.get(name, self.find_best_input_inter_sbp_sig(name, intra_sbp_sigs[name])) for name in self.input_tensors})
+            inter_sbp_sigs_.update({name: inter_sbp_sigs.get(name, self.find_best_output_inter_sbp_sig(name, intra_sbp_sigs[name])) for name in self.output_tensors})
+            cost = self.estimate_cost(intra_sbp_sigs, inter_sbp_sigs_, arch_config, training_config)
+
+            # if cost != np.inf:
+            #     if self.debug:
+            #         logger.debug(f"Cost = {int(cost):>10d}, for {idx}-th candidate")
             if cost < best_cost:
                 best_cost = cost
-                best_sbp_signatures = sbp 
+                best_intra_sbp_sigs = intra_sbp_sigs
+                best_inter_sbp_sigs = inter_sbp_sigs_
 
-        if best_sbp_signatures is None: 
+        if best_intra_sbp_sigs is None: 
             raise RuntimeError(f"Cannot find valid sbp signature!")
-        if self.is_debug:
-            logger.debug(f"Best sbp signature: {best_sbp_signatures}")
+        if self.debug:
+            logger.debug(f"Best intra sbp signatures: {intra_sbp_sigs}")
+            logger.debug(f"Best inter sbp signatures: {inter_sbp_sigs_}")
             logger.debug(f"Best Cost: {int(best_cost):>10d}")
 
         for t in chain(self.input_tensors.keys(), self.output_tensors.keys()):
-            if t not in best_sbp_signatures:
+            if t not in best_intra_sbp_sigs or t not in best_inter_sbp_sigs:
                 raise ValueError(f"{t} not in SBP signatures")
-        return best_sbp_signatures
+        return best_intra_sbp_sigs, best_inter_sbp_sigs
+    
+    def find_best_input_inter_sbp_sig(self, tensor_name: str, intra_sbp_sig: SbpSignature) -> SbpSignature:
+        """Find inter sbp signature that incurs minimum memory footprint
+        """
+        tensor = self.input_tensors[tensor_name]
+        best_inter_sbp_sig = intra_sbp_sig
+        best_local_tensor_size = get_local_tensor_info(tensor, intra_sbp_sig).size()
+
+        broadcast_dims = [i for i, sbp_prl in enumerate(intra_sbp_sig.sbp_parallels) if sbp_prl.is_broadcast()]
+        for broadcast_dims_ in chain([combinations(broadcast_dims, subset_size) for subset_size in range(1, len(broadcast_dims))]):
+            # for each broadcast placement dim i, find a tensor dim d(i), such that the split is valid
+            for pdim_2_tdim in combinations_with_replacement(range(len(tensor.shape)), len(broadcast_dims_)):
+                inter_sbp_sig = deepcopy(intra_sbp_sig)
+                inter_sbp_sig.sbp_parallels = [(SplitSbpParallel(pdim_2_tdim[pdim]) if pdim in broadcast_dims_ else sbp_prl) for pdim, sbp_prl in inter_sbp_sig.sbp_parallels]
+                try:
+                    local_tensor_size = get_local_tensor_info(tensor, inter_sbp_sig).size()
+                except:
+                    continue
+                if local_tensor_size < best_local_tensor_size:
+                    best_local_tensor_size = local_tensor_size
+                    best_inter_sbp_sig = inter_sbp_sig
+        return best_inter_sbp_sig
+    
+    def find_best_output_inter_sbp_sig(self, tensor_name: str, intra_sbp_sig: SbpSignature, reduce_partial=True) -> SbpSignature:
+        """Find inter sbp signature that incurs minimum memory footprint
+        """
+        tensor = self.output_tensors[tensor_name]
+        best_inter_sbp_sig = deepcopy(intra_sbp_sig)
+        if reduce_partial:
+            best_inter_sbp_sig.sbp_parallels = [sbp_prl if not sbp_prl.is_partial() else BroadcastSbpParallel() for sbp_prl in best_inter_sbp_sig.sbp_parallels]
+        best_local_tensor_size = get_local_tensor_info(tensor, intra_sbp_sig).size()
+
+        partial_dims = [i for i, sbp_prl in enumerate(intra_sbp_sig.sbp_parallels) if sbp_prl.is_partial()]
+        for partial_dims_ in chain([combinations(partial_dims, subset_size) for subset_size in range(1, len(partial_dims))]):
+            for pdim_2_tdim in combinations_with_replacement(range(tensor.shape), len(partial_dims_)):
+                inter_sbp_sig = deepcopy(intra_sbp_sig)
+                inter_sbp_sig.sbp_parallels = [(SplitSbpParallel(pdim_2_tdim[pdim]) if pdim in partial_dims_ else sbp_prl) for pdim, sbp_prl in inter_sbp_sig.sbp_parallels]
+                try:
+                    local_tensor_size = get_local_tensor_info(tensor, inter_sbp_sig).size()
+                except:
+                    continue
+                if local_tensor_size < best_local_tensor_size:
+                    best_local_tensor_size = local_tensor_size
+                    if reduce_partial:
+                        inter_sbp_sig.sbp_parallels = [sbp_prl if not sbp_prl.is_partial() else BroadcastSbpParallel() for sbp_prl in inter_sbp_sig.sbp_parallels]
+                    best_inter_sbp_sig = inter_sbp_sig
+        return best_inter_sbp_sig
     
     # methods for characteristics of computing a local tensor on single core
 
-    def get_bp_static_sram_utilization(self, intra_sbp_sigs: Dict[str, SbpSignature], training_config: TrainingConfig) -> int:
+    def get_bp_static_sram_utilization(self, intra_sbp_sigs: Dict[str, SbpSignature], inter_sbp_sigs: Dict[str, SbpSignature], training_config: TrainingConfig) -> int:
         """During bp computation of current batch, these static sram cannot be released.
         We consider pipeline-parallelism, where activation of the micro-batch cannot be swapped out to DRAM.
         """
@@ -160,14 +234,14 @@ class Operator(ABC):
         # only consider input activation of the operator
         # They can be released before finishing this bp stage, but that's too complicated to analyze
         for name, tensor in self.input_tensors.items():
-            sbp = intra_sbp_sigs[name]
+            sbp = inter_sbp_sigs[name]
             local_tensor = get_local_tensor_info(tensor, sbp)
             if local_tensor.kind in ['activation', 'input']:
                 sram_util += local_tensor.size()
 
         return sram_util
 
-    def get_bp_dynamic_sram_utilization(self, intra_sbp_sigs: Dict[str, SbpSignature], training_config: TrainingConfig) -> int:
+    def get_bp_dynamic_sram_utilization(self, intra_sbp_sigs: Dict[str, SbpSignature], inter_sbp_sigs: Dict[str, SbpSignature], training_config: TrainingConfig) -> int:
         """During bp computation of current batch, these temporary sram buffer need to be allocated and 
         can be immediately released after bp finishes.
 
@@ -179,7 +253,7 @@ class Operator(ABC):
         sram_util = 0
         
         for name, tensor in self.input_tensors.items():
-            sbp = intra_sbp_sigs[name]
+            sbp = inter_sbp_sigs[name]
             local_tensor = get_local_tensor_info(tensor, sbp)
             if local_tensor.kind in ['input', 'activation']:
                 input_grad_size = local_tensor.size()
@@ -233,7 +307,7 @@ class Operator(ABC):
     # sbp derivation
 
     @abstractmethod
-    def _generate_candidate_sbp_signatures(self) -> None:
+    def _generate_candidate_intra_sbp_sigs(self) -> None:
         raise NotImplementedError
     
     @property
