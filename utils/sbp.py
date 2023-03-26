@@ -87,7 +87,7 @@ class Placement():
     def __init__(self, shape: Tuple[int], interconnect_types: Tuple[int] = None) -> None:
         self.shape = shape
         if interconnect_types == None:
-            interconnect_types = ['noc'] * len(shape)  # TODO: leave it for the future
+            interconnect_types = ['core'] * len(shape)  # TODO: leave it for the future
         self.interconnect_types = interconnect_types
 
     def __eq__(self, __value: object) -> bool:

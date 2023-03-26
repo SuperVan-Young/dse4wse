@@ -5,8 +5,45 @@ from functools import reduce
 import numpy as np
 
 class ArchConfig(UserDict):
+    """Architecture description of wafer-scale engines
+
+    Parameters:
+    - Core level:
+        - core_num_mac: number of MAC units
+        - core_sram_size: local SRAM size (bytes)
+        - core_sram_bandwidth: local SRAM bandwidth (bytes/cycle)
+        - inter_core_bandwidth: NoC bandwidth between cores
+    - Reticle level:
+        - core_array_height
+        - core_array_width
+        - inter_reticle_bandwidth
+    - Wafer level:
+        - reticle_array_height
+        - reticle_array_width
+        - wafer_dram_size: total dram size of a wafer
+        - wafer_dram_bandwidth: 1 share corresponding to a reticle boundary
+        - wafer_dram_stacking_type: 2d, 3d, None
+        - inter_wafer_bandwidth
+    """
+    
     def __init__(self, data: Dict) -> None:
         self.data = data
+        for key in [
+            'core_num_mac',
+            'core_sram_size',
+            'core_sram_bandwidth',
+            'inter_core_bandwidth',
+            'core_array_height',
+            'core_array_width',
+            'inter_reticle_bandwidth',
+            'reticle_array_height',
+            'reticle_array_width',
+            'wafer_dram_size',
+            'wafer_dram_bandwidth',
+            'wafer_dram_stacking_type',
+            'inter_wafer_bandwidth',
+        ]:
+            assert key in self.data
 
     def __setitem__(self, key, item) -> None:
         raise RuntimeError("ArchConfig cannot be overwritten.")
@@ -39,19 +76,19 @@ class ArchConfig(UserDict):
     def get_sram_bandwidth(self) -> int:
         """Single core memory bandwidth, in terms of Byte/Cycle.
         """
-        return self.data['core_buffer_width']
+        return self.data['core_sram_bandwidth']
     
     def get_sram_size(self) -> int:
         """Single core SRAM size, in terms of Byte.
         """
-        return self.data['core_buffer_size']
+        return self.data['core_sram_size']
     
-    def get_interconnect_bandwidth(self, connect_type='noc'):
+    def get_interconnect_bandwidth(self, connect_type='core'):
         """In terms of Byte/Cycle
-        Supported connect_type: noc, reticle, wafer
+        Supported connect_type: core, reticle, wafer
         """
-        if connect_type == 'noc':
-            return self.data['noc_bandwidth']
+        if connect_type == 'core':
+            return self.data['inter_core_bandwidth']
         elif connect_type == 'reticle':
             return self.data['inter_reticle_bandwidth']
         elif connect_type == 'wafer':
@@ -59,14 +96,33 @@ class ArchConfig(UserDict):
         else:
             raise NotImplementedError
         
-    def get_dram_size(self) -> int:
-        return np.inf
+    def get_array_size(self, dimension):
+        if dimension == 'reticle_height':
+            return self.data['reticle_array_height']
+        elif dimension == 'reticle_width':
+            return self.data['reticle_array_width']
+        elif dimension == 'core_height':
+            return self.data['core_array_height']
+        elif dimension == 'core_width':
+            return self.data['core_array_height']
+        else:
+            raise NotImplementedError
+        
+    def get_wafer_dram_size(self) -> int:
+        return self.data['wafer_dram_size']
     
-    def get_dram_bandwidth(self) -> int:
+    def get_wafer_dram_bandwidth(self) -> int:
         """ In Bytes
         """
-        #TODO: 2d-DRAM and 3d-DRAM difference?
-        return self.data['dram_bandwidth']
+        wafer_dram_stacking_type = self.data['wafer_dram_stacking_type']
+        if wafer_dram_stacking_type == '2d':
+            return 2 * (self.data['reticle_array_height'] + self.data['reticle_array_width']) * self.data['wafer_dram_bandwidth']
+        elif wafer_dram_stacking_type == '3d':
+            return self.data['reticle_array_height'] * self.data['reticle_array_width'] * self.data['wafer_dram_bandwidth']
+        elif wafer_dram_stacking_type == 'none':
+            return 0
+        else:
+            raise NotImplementedError
         
     def get_total_cores(self) -> int:
         total_cores = reduce(lambda x, y: x * y, [
@@ -76,29 +132,3 @@ class ArchConfig(UserDict):
             self.data['core_array_width'],
         ])
         return total_cores
-    
-    def get_reticle_array_height(self):
-        return self.data['reticle_array_height']
-    
-    def get_reticle_array_width(self):
-        return self.data['reticle_array_width']
-    
-if __name__ == "__main__":
-    # Here's an example configuration for our WSE
-
-    arch_config = ArchConfig({
-        'core_num_mac': 32,
-        'core_buffer_width': 16,
-        'core_buffer_size': 256,
-        'noc_virtual_channel': 4,
-        'noc_buffer_size': 8,
-        'noc_bandwidth': 4096,
-        'core_array_height': 25,
-        'core_array_width': 25,
-        'reticle_array_height': 8,
-        'reticle_array_width': 8,
-        'inter_reticle_bandwidth': 1024,
-        'inter_wafer_bandwidth': 256,
-    })
-    print(arch_config)
-    print(arch_config._shallow_repr())

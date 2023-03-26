@@ -81,6 +81,7 @@ class OpGraph(DiGraph):
         """ Get input tensor's sbp signature on previous tensors
         """
         # FIXME: use local name! unify representation with BaseOperator
+        logger.warn("Deprecated in the future")
         inter_layer_sbp_signatures = {}
 
         cur_op = self.nodes[node]['operator']
