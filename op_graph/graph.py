@@ -33,7 +33,7 @@ class OpGraph(DiGraph):
             op: Operator
             for tensor_name, tensor in chain(op.input_tensors.items(), op.output_tensors.items()):
                 if tensor.kind in kind:
-                    tensors[tensor_name] = tensor
+                    tensors[tensor.name] = tensor
         return tensors
     
     def get_propagation_latency(self, arch_config: ArchConfig, forward=True) -> float:
