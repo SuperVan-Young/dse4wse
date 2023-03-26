@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from utils import logger, TensorInfo
-from graph import OpGraph
+from graph import OpGraph, build_op_graph_from_operator_list
 from op.build_op import build_operator
 
 MODEL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
@@ -32,7 +32,6 @@ class OpGraphConstructor(ABC):
         raise NotImplementedError
 
     def _build_from_onnx_model(self, onnx_model) -> OpGraph:
-        op_graph = OpGraph()
 
         def get_tensor_info(val, inplace):
             name = val.name
@@ -55,6 +54,7 @@ class OpGraphConstructor(ABC):
         tensor_infos.update({val.name: get_tensor_info_from_initializer(val, inplace=True) for val in onnx_model.graph.initializer})
 
         # add operators from graph proto
+        operators = []
         for op_proto in onnx_model.graph.node:
             name = op_proto.name
             op_type = op_proto.op_type
@@ -65,17 +65,9 @@ class OpGraphConstructor(ABC):
             except NotImplementedError:
                 logger.info(f"Ignoring operator {name} due to missing implementation.")
                 continue
-            op_graph.add_node(name)
-            op_graph.nodes[name]['operator'] = op_node
+            operators.append(op_node)
 
-        # connect edges
-        for u, u_op in op_graph.nodes(data='operator'):
-            u_out = set(u_op.output_tensors.values())
-            for v, v_op in op_graph.nodes(data='operator'):
-                v_in = set(v_op.input_tensors.values())
-                used_tensors = list(u_out & v_in)
-                if used_tensors:
-                    op_graph.add_edge(u, v, used_tensors=used_tensors)
+        op_graph = build_op_graph_from_operator_list(operators)
 
         logger.info(f"Summary for building op graph:")
         logger.info(f"Number of Op in original ONNX model: {len(onnx_model.graph.node)}")

@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Dict, Union
+from typing import Dict, Union, List
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -10,7 +10,7 @@ from networkx import DiGraph
 from itertools import chain
 
 from op import Operator
-from utils import logger, ArchConfig
+from utils import logger, ArchConfig, TensorInfo
 
 class OpGraph(DiGraph):
 
@@ -26,6 +26,20 @@ class OpGraph(DiGraph):
             return {name: 1 for name in self.nodes()}
         else:
             return self._duplication_table
+        
+    def get_tensors(self, kind=['weight', 'input', 'output', 'activation', 'constant']) -> Dict[str, TensorInfo]:
+        tensors = {}
+        for op_name, op in self.nodes(data='operator'):
+            op: Operator
+            for tensor_name, tensor in chain(op.input_tensors.items(), op.output_tensors.items()):
+                if tensor.kind in kind:
+                    tensors[tensor_name] = tensor
+        return tensors
+    
+    def get_fp_latency(self) -> float:
+        """Sequentially compute each operation and transmit data between operators
+        """
+        pass
 
     def get_inter_layer_sbp_signatures(self, node):
         """ Get input tensor's sbp signature on previous tensors
@@ -139,3 +153,22 @@ class OpGraph(DiGraph):
         assert total_latency < np.inf
 
         return total_latency
+    
+def build_op_graph_from_operator_list(operators: List[Operator]):
+    op_graph = OpGraph()
+
+    for op in operators:
+        name = op.name
+        op_graph.add_node(name)
+        op_graph.nodes[name]['operator'] = op
+
+    # connect edges
+    for u, u_op in op_graph.nodes(data='operator'):
+        u_out = set(u_op.output_tensors.values())
+        for v, v_op in op_graph.nodes(data='operator'):
+            v_in = set(v_op.input_tensors.values())
+            used_tensors = list(u_out & v_in)
+            if used_tensors:
+                op_graph.add_edge(u, v, used_tensors=used_tensors)
+
+    return op_graph
