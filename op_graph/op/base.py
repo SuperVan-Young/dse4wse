@@ -254,30 +254,52 @@ class Operator(ABC):
         - output tensors' grad
         - weight tensor itself, its' grad, dynamic os, static os
         - input tensors' grad
+
+        Naive estimation of upper bound:
+        - output tensor grad lives throughtout this bp
+        - a copy of original weight lives throughout this bp
+        - update one weight at a time, and flush updated weight
+        - calc all activation's weight
         """
-        sram_util = 0
-        
-        for name, tensor in self.input_tensors.items():
-            sbp = inter_sbp_sigs[name]
-            local_tensor = get_local_tensor_info(tensor, sbp)
-            if local_tensor.kind in ['input', 'activation']:
-                input_grad_size = local_tensor.size()
-                sram_util += input_grad_size
-            elif local_tensor.kind in ['weight']:
-                weight_size = weight_grad_size = local_tensor.size()
-                weight_dynamic_os_size = training_config.get_dynamic_optimizer_state_size() * local_tensor.numel()
-                weight_static_os_size = training_config.get_static_optimizer_state_size() * local_tensor.numel()
-                sram_util += weight_size + weight_grad_size + weight_dynamic_os_size + weight_static_os_size
-            else:
-                continue
+
+        static_sram_util = 0
         for name, tensor in self.output_tensors.items():
             sbp = intra_sbp_sigs[name]
             local_tensor = get_local_tensor_info(tensor, sbp)
             if local_tensor.kind in ['activation']:
                 output_grad_size = local_tensor.size()
-                sram_util += output_grad_size
+                static_sram_util += output_grad_size
 
-        return sram_util
+        for name, tensor in self.input_tensors.items():
+            sbp = inter_sbp_sigs[name]
+            local_tensor = get_local_tensor_info(tensor, sbp)
+            if local_tensor.kind == 'weight':
+                weight_size = local_tensor.size()
+                static_sram_util += weight_size
+
+        weight_dynamic_sram_util = 0
+        for name, tensor in self.input_tensors.items():
+            sbp = inter_sbp_sigs[name]
+            local_tensor = get_local_tensor_info(tensor, sbp)
+            if local_tensor.kind in ['weight']:
+                weight_copy_size = weight_grad_size = local_tensor.size()
+                weight_dynamic_os_size = training_config.get_dynamic_optimizer_state_size() * local_tensor.numel()
+                weight_static_os_size = training_config.get_static_optimizer_state_size() * local_tensor.numel()
+                weight_dynamic_sram_util = max(weight_dynamic_sram_util, weight_copy_size + weight_grad_size + weight_dynamic_os_size + weight_static_os_size)
+
+        input_dynamic_sram_util = 0
+        for name, tensor in self.input_tensors.items():
+            sbp = inter_sbp_sigs[name]
+            local_tensor = get_local_tensor_info(tensor, sbp)
+
+            if local_tensor.kind in ['input', 'activation']:
+                input_grad_size = local_tensor.size()
+                input_dynamic_sram_util += input_grad_size
+
+        dynamic_sram_util = max(weight_dynamic_sram_util, input_dynamic_sram_util)
+        total_sram_util = static_sram_util + dynamic_sram_util
+
+        return total_sram_util
     
     @abstractmethod
     def get_fp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):

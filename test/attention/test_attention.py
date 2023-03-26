@@ -11,7 +11,7 @@ from op_graph.module import AttentionModule
 from utils import ArchConfig, logger
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--case', metavar='N', type=int, default=1)
+parser.add_argument('--case', metavar='N', type=int, default=0)
 
 # Megatron uses #Tensor_parallel x #data_parallel GPU for one pipeline stage (roughly 1~2 layers)
 # We use similar setup for the model size

@@ -70,7 +70,7 @@ class AttentionModule():
             name='QKV',
             shape=(B, S, 3 * H // T),
             onnx_dtype=BFLOAT16,
-            kind='input',
+            kind='activation',
             inplace=False,
         )
         Q = TensorInfo(
