@@ -201,20 +201,20 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
     # It uses inter-connection to give an abstraction of a large, uniform memory to the consumer
     # without allocating more static memory.
     # This only includes S->B
-    virtual_transform_dims = []
+    virtual_transform_pdims = []
 
     global_tensor_size = tensor_info.size()
     static_comm_cost = 0  # move once and for all
 
-    for dim, (prev_parallel, cur_parallel, dim_value, interconnect_type) \
+    for pdim, (prev_parallel, cur_parallel, pdim_value, interconnect_type) \
         in enumerate(zip(prev_sbp_sig.sbp_parallels, cur_sbp_sig.sbp_parallels, placement.shape, placement.interconnect_types)):
         bandwidth = arch_config.get_interconnect_bandwidth(interconnect_type)
         if prev_parallel.is_split():
             if cur_parallel.is_split():
                 if prev_parallel.dim != cur_parallel.dim:
-                    static_comm_cost += int(dim_value - 1)  * int(global_tensor_size / dim_value / bandwidth)
+                    static_comm_cost += int(pdim_value - 1)  * int(global_tensor_size / pdim_value / bandwidth)
             elif cur_parallel.is_broadcast():
-                virtual_transform_dims.append(dim)
+                virtual_transform_pdims.append(pdim)
             elif cur_parallel.is_partial():
                 raise NotImplementedError("Seriously? Split to partial and waste your memory?")
             else:
@@ -226,9 +226,9 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
             # Neglecting input-stationary dataflow is fine, if only considering mem limitation on output tensor.
             # There're other sbp signatures that only store single copy of output tensor
             if cur_parallel.is_split():
-                static_comm_cost += int(dim_value - 1)  * int(global_tensor_size / dim_value / bandwidth)
+                static_comm_cost += int(pdim_value - 1)  * int(global_tensor_size / pdim_value / bandwidth)
             elif cur_parallel.is_broadcast():
-                static_comm_cost += 2 * int(dim_value - 1)  * int(global_tensor_size / dim_value / bandwidth)
+                static_comm_cost += 2 * int(pdim_value - 1)  * int(global_tensor_size / pdim_value / bandwidth)
             else:
                 continue
         else:
@@ -236,10 +236,11 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
 
     # Handle virtual transform
     local_tensor_shape = list(get_local_tensor_info(tensor_info, cur_sbp_sig).shape)
-    for dim in virtual_transform_dims:
-        dim_value = placement.shape[dim]
-        assert local_tensor_shape[dim] % dim_value == 0
-        local_tensor_shape[dim] //= dim_value
+    for pdim in virtual_transform_pdims:
+        pdim_value = placement.shape[pdim]
+        tdim = prev_sbp_sig.sbp_parallels[pdim].dim
+        assert local_tensor_shape[tdim] % pdim_value == 0
+        local_tensor_shape[tdim] //= pdim_value
     local_tensor_size = reduce(lambda x, y: x * y, local_tensor_shape)
 
     def calc_nested_loop_transmission_cost(info_array_):
@@ -249,12 +250,12 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
         return np.sum(iterations / bandwidths)
 
     info_array = zip(
-        [placement.shape[dim] for dim in virtual_transform_dims],
-        [arch_config.get_interconnect_bandwidth(placement.interconnect_types[dim]) for dim in virtual_transform_dims])
-    if len(virtual_transform_dims):
+        [placement.shape[pdim] for pdim in virtual_transform_pdims],
+        [arch_config.get_interconnect_bandwidth(placement.interconnect_types[pdim]) for pdim in virtual_transform_pdims])
+    if len(virtual_transform_pdims):
         minimum_virtual_transform_cost = local_tensor_size * min(
             calc_nested_loop_transmission_cost(info_array_)
-            for info_array_ in permutations(info_array, len(virtual_transform_dims))
+            for info_array_ in permutations(info_array, len(virtual_transform_pdims))
         )
     else:
         minimum_virtual_transform_cost = 0

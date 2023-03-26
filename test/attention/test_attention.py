@@ -11,7 +11,7 @@ from op_graph.module import AttentionModule
 from utils import ArchConfig, logger
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--case', metavar='N', type=int)
+parser.add_argument('--case', metavar='N', type=int, default=1)
 
 # Megatron uses #Tensor_parallel x #data_parallel GPU for one pipeline stage (roughly 1~2 layers)
 # We use similar setup for the model size
@@ -72,9 +72,9 @@ def test_attention_module(
 
     logger.info(f"Training throughput: {training_throughput} sequence / second")
 
-def run_testcase(case=0):
+def run_testcase(case=1):
     df = pd.read_excel(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'megatron.xlsx'))
-    megatron_config = df.loc[case]
+    megatron_config = df.iloc[case]
 
     number_of_parameters = megatron_config['number_of_parameters']
     logger.info(f"Running megatron test case {case} with {number_of_parameters} billion parameters")
