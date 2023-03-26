@@ -131,13 +131,11 @@ class Operator(ABC):
         bp_sram_util = self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config) + self.get_bp_dynamic_sram_utilization(intra_sbp_sigs, inter_sbp_sigs, training_config)
         # fp uses less sram than bp, thus is ignored
         # temp buffer for dynamic broadcasting is ignored
+        logger.debug(f"bp_sram_util   : {int(bp_sram_util):>15d}")
+        logger.debug(f"available sram : {available_sram:>15d}")
         if bp_sram_util <= available_sram:
             return 0
         else:
-            if self.debug:
-                logger.debug(f"SRAM is not enough!")
-                logger.debug(f"bp_sram_util: {int(bp_sram_util):>15d}")
-                logger.debug(f"available sram: {available_sram:>15d}")
             return np.inf
 
     def generate_candidate_intra_sbp_sigs(self):
@@ -309,6 +307,11 @@ class Operator(ABC):
         else:
             available_compute_power = compute_power  # compute bounded
         total_cycles = mac_count / available_compute_power
+
+        # if self.debug:
+        #     logger.debug(f"arithmetic intensity: {arithmetic_intensity}")
+        #     logger.debug(f"maximum intensity: {maximum_intensity}")
+        #     logger.debug(f"available compute power: {available_compute_power}")
         return total_cycles
 
     # sbp derivation

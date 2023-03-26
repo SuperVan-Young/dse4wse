@@ -11,17 +11,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from base import Operator
 from utils import (
     ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, PartialSbpParallel,
-    BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info, TrainingConfig
+    BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info, TrainingConfig,
+    factoring,
 )
 
 class MatMulOperator(Operator):
     def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo],
-                 M_block_size=1, K_block_size=1, N_block_size=1,  *args, **kwargs) -> None:
+                 *args, **kwargs) -> None:
         super().__init__(name, op_type, input_tensors, output_tensors, *args, **kwargs)
         # assuming some lower-level memory hierarchy below SRAM, for comparing GPU and WSE
-        self.M_block_size = M_block_size
-        self.K_block_size = K_block_size
-        self.N_block_size = N_block_size
         assert len(input_tensors) == 2
         assert len(output_tensors) == 1
         assert 'A' in input_tensors
@@ -53,15 +51,25 @@ class MatMulOperator(Operator):
         assert K0 == K1, f"{K0} != {K1}"
         return reduce(lambda x, y: x * y, stack_shape + [M, K1, N])
     
-    def __get_matmul_sram_access_count(self, shape0, shape1):
+    def __get_matmul_sram_access_count(self, shape0, shape1, arch_config: ArchConfig):
         stack_shape = multidirectional_broadcasting(shape0[:-2], shape1[:-2])
         M, K0, K1, N = shape0[-2], shape0[-1], shape1[-2], shape1[-1]
         assert K0 == K1
 
-        # assume no inner blocking
-        A_ref_count = M * K0 * N // self.N_block_size
-        B_ref_count = M * K1 * N // self.M_block_size
-        Y_ref_count = M * N // self.K_block_size
+        # dynamically find the largest blocking the architecture can do
+        core_num_reg = arch_config.get_core_num_reg()
+        best_utilized_reg = 3
+        best_blocking = (1, 1, 1)
+        M_factors, K_factors, N_factors = factoring(M, core_num_reg), factoring(K0, core_num_reg), factoring(N, core_num_reg)
+        for M_block_size, K_block_size, N_block_size in product(M_factors, K_factors, N_factors):
+            utilized_reg = M_block_size * K_block_size + M_block_size * N_block_size + K_block_size * N_block_size
+            if utilized_reg > best_utilized_reg and utilized_reg <= core_num_reg:
+                best_utilized_reg = 0
+                best_blocking = (M_block_size, K_block_size, N_block_size)
+
+        A_ref_count = M * K0 * N // best_blocking[2]
+        B_ref_count = M * K1 * N // best_blocking[0]
+        Y_ref_count = M * N // best_blocking[1]
         total_ref_count = reduce(lambda x, y: x * y, stack_shape, 1) * (A_ref_count + B_ref_count + Y_ref_count)
 
         return total_ref_count
@@ -71,7 +79,7 @@ class MatMulOperator(Operator):
         A_local = get_local_tensor_info(A_info, intra_sbp_sigs['A'])
         B_local = get_local_tensor_info(B_info, intra_sbp_sigs['B'])
         mac_count = self.get_fp_mac_count()
-        sram_access_count = self.__get_matmul_sram_access_count(A_local.shape, B_local.shape)
+        sram_access_count = self.__get_matmul_sram_access_count(A_local.shape, B_local.shape, arch_config)
         return self._estimate_latency_with_roofline_model(mac_count, sram_access_count, arch_config)
 
     def get_bp_latency(self, intra_sbp_sigs: Dict[str, SbpSignature], arch_config: ArchConfig):
@@ -81,8 +89,8 @@ class MatMulOperator(Operator):
         Y_local = get_local_tensor_info(Y_info, intra_sbp_sigs['Y'])
         shape_A_transpose = transpose(A_local.shape, -2, -1)
         shape_B_transpose = transpose(B_local.shape, -2, -1)
-        bp_A_sram_access = self.__get_matmul_sram_access_count(shape_A_transpose, Y_local.shape)
-        bp_B_sram_access = self.__get_matmul_mac_count(Y_local.shape, shape_B_transpose)
+        bp_A_sram_access = self.__get_matmul_sram_access_count(shape_A_transpose, Y_local.shape, arch_config)
+        bp_B_sram_access = self.__get_matmul_sram_access_count(Y_local.shape, shape_B_transpose, arch_config)
         return self._estimate_latency_with_roofline_model(self.__get_bp_A_mac_count(), bp_A_sram_access, arch_config) \
              + self._estimate_latency_with_roofline_model(self.__get_bp_B_mac_count(), bp_B_sram_access, arch_config) 
 

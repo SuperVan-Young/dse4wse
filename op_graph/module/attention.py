@@ -13,6 +13,8 @@ from utils import TensorInfo, TrainingConfig, ArchConfig, logger
 
 BFLOAT16 = 10
 
+MATMUL_BLOCK_SIZE = 64  # otherwise we cannot cover SRAM reference bandwidth
+
 class AttentionModule():
 
     def __init__(self,
@@ -132,25 +134,25 @@ class AttentionModule():
             name='linear_qkv',
             op_type='Matmul',
             input_tensors={'A': X, 'B': W_qkv},
-            output_tensors={'Y': QKV}
+            output_tensors={'Y': QKV},
         )
         matmul_qk = MatMulOperator(
             name='matmul_qk',
             op_type='Matmul',
             input_tensors={'A': Q, 'B': K},
-            output_tensors={'Y': scores}
+            output_tensors={'Y': scores},
         )
         matmul_scorev = MatMulOperator(
             name='matmul_scorev',
             op_type='Matmul',
             input_tensors={'A': scores, 'B': V},
-            output_tensors={'Y': Y}
+            output_tensors={'Y': Y},
         )
         linear_proj = MatMulOperator(
             name='linear_proj',
             op_type='Matmul',
             input_tensors={'A': Y_reshape, 'B': W_proj},
-            output_tensors={'Y': Z}
+            output_tensors={'Y': Z},
         )
         #TODO: add reshape operators to calculate comm cost
 
@@ -181,7 +183,12 @@ class AttentionModule():
         for name, op in self._op_graph.nodes(data='operator'):
             op:Operator
             op.num_core_range = list(range(1, arch_config.get_total_cores() + 1))
+            
             op.debug = True
+            logger.info(f"Derive sbp for operator {name}:")
+            for tensor_name, tensor in chain(op.input_tensors.items(), op.output_tensors.items()):
+                logger.info(f"- {tensor_name}: {tensor.shape}")
+
             op.generate_candidate_intra_sbp_sigs()
             intra_sbp_sigs, inter_sbp_sigs = op.find_best_sbp_signature(arch_config, self._training_config, {})
             op.final_intra_sbp_sigs = intra_sbp_sigs
@@ -190,6 +197,8 @@ class AttentionModule():
     def get_training_throughput(self, arch_config: ArchConfig):
         """ in terms of sequence per second
         """
+        logger.info("Calculating throughput of attention module")
+
         single_stage_fp_latency = self.get_fp_latency(arch_config)
         single_stage_bp_latency = self.get_bp_latency(arch_config)
         pipeline_factor = self.number_of_layers + (self.mini_batch_size // self.micro_batch_size - 1)
@@ -207,14 +216,19 @@ class AttentionModule():
         input_cross_wafer_latency = input_tensor_total_size / inter_wafer_bandwidth
 
         # compute for #swap_weight_timesteps
-        op_graph_fp_latency = self._op_graph.get_propagation_latency(arch_config, forward=True) * self.swap_weight_timesteps
+        op_graph_fp_latency = self._op_graph.get_propagation_latency(arch_config, forward=True) * self.swap_weight_timesteps * self.layer_of_pipeline_stage
 
         # load weight from DRAM once and all-gather for all data-parallel 'workers'
-        swap_weight_latency = self._swap_weight_latency(arch_config)
+        swap_weight_latency = self._swap_weight_latency(arch_config) * self.layer_of_pipeline_stage
 
         # compute and swap weight can be overlapped
         # comm cost for output on same device is ignored 
-        total_latency = input_cross_wafer_latency + max(op_graph_fp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
+        total_latency = input_cross_wafer_latency + max(op_graph_fp_latency, swap_weight_latency)
+
+        logger.info("Summary for forward propagation latency (latency with same stage number can be overlapped)")
+        logger.info(f"- input cross wafer latency (1): {int(input_cross_wafer_latency):>15d} cycles ({input_cross_wafer_latency/total_latency:.2%})")
+        logger.info(f"- op graph fp latency       (2): {int(op_graph_fp_latency):>15d} cycles ({op_graph_fp_latency/total_latency:.2%})")
+        logger.info(f"- swap weight latency       (2): {int(swap_weight_latency):>15d} cycles ({swap_weight_latency/total_latency:.2%})")
 
         return total_latency
     
@@ -238,17 +252,23 @@ class AttentionModule():
         input_tensor_total_size = sum([tensor.size() for tensor in input_tensors.values()]) * self.data_parallel_size
         input_dram_latency = input_tensor_total_size / dram_bandwidth
 
-        op_graph_fp_latency = self._op_graph.get_propagation_latency(arch_config, forward=True) * self.swap_weight_timesteps
-        swap_weight_latency = self._swap_weight_latency(arch_config)
+        op_graph_fp_latency = self._op_graph.get_propagation_latency(arch_config, forward=True) * self.swap_weight_timesteps * self.layer_of_pipeline_stage
+        swap_weight_latency = self._swap_weight_latency(arch_config) * self.layer_of_pipeline_stage
 
-        rematerialization_total_latency = input_dram_latency + max(op_graph_fp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
+        rematerialization_total_latency = input_dram_latency + max(op_graph_fp_latency, swap_weight_latency)
 
         # compute for # swap_weight_timesteps
-        op_graph_bp_latency = self._op_graph.get_propagation_latency(arch_config, forward=False) * self.swap_weight_timesteps
+        op_graph_bp_latency = self._op_graph.get_propagation_latency(arch_config, forward=False) * self.swap_weight_timesteps * self.layer_of_pipeline_stage
 
         # rematerilization and fetch grad can be overlapped
         # compute and swap weight can be overlapped
-        total_latency = max(grad_total_latency, rematerialization_total_latency) + max(op_graph_bp_latency, swap_weight_latency) * self.layer_of_pipeline_stage
+        total_latency = max(grad_total_latency, rematerialization_total_latency) + max(op_graph_bp_latency, swap_weight_latency)
+
+        logger.info("Summary for backward propagation latency (latency with same stage number can be overlapped)")
+        logger.info(f"- grad transmission latency (1): {int(grad_total_latency):>15d} cycles ({grad_total_latency/total_latency:.2%})")
+        logger.info(f"- rematerialization latency (1): {int(rematerialization_total_latency):>15d} cycles ({rematerialization_total_latency/total_latency:.2%})")
+        logger.info(f"- op graph bp latency       (2): {int(op_graph_bp_latency):>15d} cycles ({op_graph_bp_latency/total_latency:.2%})")
+        logger.info(f"- swap weight latency       (2): {int(swap_weight_latency):>15d} cycles ({swap_weight_latency/total_latency:.2%})")
     
         return total_latency
 

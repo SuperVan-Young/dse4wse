@@ -32,6 +32,7 @@ class ArchConfig(UserDict):
         for key in [
             'core_frequency',
             'core_num_mac',
+            'core_num_reg',
             'core_sram_size',
             'core_sram_bandwidth',
             'inter_core_bandwidth',
@@ -77,6 +78,9 @@ class ArchConfig(UserDict):
         regardless of the data type.
         """
         return self.data['core_num_mac']
+    
+    def get_core_num_reg(self) -> int:
+        return self.data['core_num_reg']
     
     def get_sram_bandwidth(self) -> int:
         """Single core memory bandwidth, in terms of Byte/Cycle.
