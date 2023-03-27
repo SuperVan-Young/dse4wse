@@ -8,7 +8,7 @@ import pandas as pd
 import argparse
 
 from op_graph.module import AttentionModule
-from utils import ArchConfig, logger
+from utils import GpuArchConfig, logger
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--case', metavar='N', type=int, default=6)
@@ -40,7 +40,6 @@ def test_attention_module(
         data_parallel_size = data_parallel_size,
         model_parallel_size = model_parallel_size,
         tensor_parallel_size = tensor_parallel_size,
-        swap_weight_timesteps = swap_weight_timesteps,
     )
     
     # similar hardware resources like Megatron-2 paper setup for corresponding model
@@ -48,29 +47,27 @@ def test_attention_module(
     # FIXME: one more thing, we assume matmul blocking size = 64 in default
     # This is not always correct for all WSE chips
     # We should take number of registers into design consideration
-    arch_config = ArchConfig({
-        'core_frequency': 1e9,               # 1GHz
-        'core_num_mac': 312000,              # A100 FP16 312 TFLOPS
-        'core_num_reg': 32 * 1024 * 108,     # 64K / SM and 108 SM, we assume we only use 50%
-        'core_sram_size': 40 * 1024 * 1024,  # 40MB L2 cache
-        'core_sram_bandwidth': 4830,         # 2.3x 2.1TB/s (V100)
-        'inter_core_bandwidth': 7 * 600,     # same with reticle    
-        'core_array_height': 1,
-        'core_array_width': 1,
-        'inter_reticle_bandwidth': 7 * 600,  # 7x NVLink 3.0 x 12 ports
-        'reticle_array_height': 1,           # data parallel size is considered within attn module
-        'reticle_array_width': int(tensor_parallel_size),
-        'wafer_dram_size': data_parallel_size * tensor_parallel_size * 80e9,
-        'wafer_dram_bandwidth': 1.94e3,      # 1.94TB/s HBM      
-        'wafer_dram_stacking_type': '2d',
-        'inter_wafer_bandwidth': 25,         # 200Gb/s infiniband
-    })
+    # arch_config = GpuArchConfig({
+    #     'core_frequency': 1e9,               # 1GHz
+    #     'core_num_mac': 312000,              # A100 FP16 312 TFLOPS
+    #     'core_num_reg': 32 * 1024 * 108,     # 64K / SM and 108 SM, we assume we only use 50%
+    #     'core_sram_size': 40 * 1024 * 1024,  # 40MB L2 cache
+    #     'core_sram_bandwidth': 4830,         # 2.3x 2.1TB/s (V100)
+    #     'inter_core_bandwidth': 7 * 600,     # same with reticle    
+    #     'core_array_height': 1,
+    #     'core_array_width': 1,
+    #     'inter_reticle_bandwidth': 7 * 600,  # 7x NVLink 3.0 x 12 ports
+    #     'reticle_array_height': int(data_parallel_size),   # swap weight between workers
+    #     'reticle_array_width': int(tensor_parallel_size),  # swap input within worker
+    #     'wafer_dram_size': data_parallel_size * tensor_parallel_size * 80e9,
+    #     'wafer_dram_bandwidth': 1.94e3,      # 1.94TB/s HBM      
+    #     'wafer_dram_stacking_type': '2d',
+    #     'inter_wafer_bandwidth': 25,         # 200Gb/s infiniband
+    # })
 
-    attention_module.alloc_core_and_derive_sbp_sig(arch_config)
+    arch_config = GpuArchConfig()
 
-    logger.warning("Using GPU-like mode for attention module")
-    attention_module.gpu_like = True
-
+    attention_module.check_hbm_utilization(arch_config)
     training_throughput = attention_module.get_training_throughput(arch_config)
 
     logger.info(f"Training throughput: {training_throughput} sequence / second")

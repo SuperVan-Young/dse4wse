@@ -141,3 +141,19 @@ class ArchConfig(UserDict):
             self.data['core_array_width'],
         ])
         return int(total_cores)
+    
+class GpuArchConfig():
+    """ GPU architecture configuration, default is A100 config.
+    """
+    def __init__(self,
+                 compute_power: int = 312e12,
+                 gpu_memory_size: int = 80e9,
+                 hbm_bandwidth: int = 1.94e12,
+                 nvlink_bandwidth: int = 600e9,
+                 infiniband_bandwidth: int = 25e9,
+                 ):
+        self.compute_power = compute_power
+        self.gpu_memory_size = gpu_memory_size
+        self.hbm_bandwidth = hbm_bandwidth
+        self.nvlink_bandwidth = nvlink_bandwidth
+        self.infiniband_bandwidth = infiniband_bandwidth  # assume 1 port for each GPU

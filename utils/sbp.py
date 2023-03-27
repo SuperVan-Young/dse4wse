@@ -265,7 +265,9 @@ def calc_comm_cost_on_same_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSig
     return total_cost
 
 
-def calc_comm_cost_on_disjoint_devices():
+def calc_comm_cost_on_disjoint_devices(tensor_info: TensorInfo, prev_sbp_sig: SbpSignature, cur_sbp_sig: SbpSignature, arch_config: ArchConfig, connect_type='reticle'):
+    """ Reduce all partials -> 1 copy transmission -> broadcast
+    """
     raise NotImplementedError
 
 def calc_comm_cost_for_input(input_sbp_signature: Union[None, SbpSignature], output_sbp_signatures: SbpSignature, arch_config: ArchConfig, tensor_info: TensorInfo) -> float:

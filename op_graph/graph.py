@@ -38,6 +38,7 @@ class OpGraph(DiGraph):
     
     def get_propagation_latency(self, arch_config: ArchConfig, forward=True) -> float:
         """Sequentially compute each operation and transmit data between operators
+        Consider boxing separately with propagation
         """
         total_compute_latency = 0
         total_boxing_latency = 0
@@ -49,8 +50,6 @@ class OpGraph(DiGraph):
             else:
                 compute_latency = op.get_bp_latency(op.final_intra_sbp_sigs, arch_config)
             total_compute_latency += compute_latency
-        for prev, succ in self.edges():
-            total_boxing_latency += self.get_boxing_latency(prev, succ, arch_config)
 
         total_latency = total_compute_latency + total_boxing_latency
         return total_latency
@@ -74,8 +73,10 @@ class OpGraph(DiGraph):
             if prev_inter_sbp_sig.placement == succ_inter_sbp_sig.placement:
                 return calc_comm_cost_on_same_devices(tensor, prev_inter_sbp_sig, succ_inter_sbp_sig, arch_config)
             else:
-                raise NotImplementedError
-                return calc_comm_cost_on_disjoint_devices()
+                # we don't know how these devices are interconnected 
+                # for simplicity, we assume its reticle
+                # FIXME: finish this part tomorrow!
+                return calc_comm_cost_on_disjoint_devices(tensor, prev_inter_sbp_sig, succ_inter_sbp_sig, arch_config)
             
     def get_inter_layer_sbp_signatures(self, node):
         """ Get input tensor's sbp signature on previous tensors
@@ -212,7 +213,7 @@ def build_op_graph_from_operator_list(operators: List[Operator]):
                 for common_tensor_name in common_tensor_names:
                     perv_tensor = u_op.output_tensors[u_out_tensor_name_2_local_name[common_tensor_name]]
                     succ_tensor = v_op.input_tensors[v_in_tensor_name_2_local_name[common_tensor_name]]
-                    assert tuple(perv_tensor.shape) == tuple(succ_tensor.shape)
+                    assert tuple(perv_tensor.shape) == tuple(succ_tensor.shape), (perv_tensor.shape, succ_tensor.shape)
                 boxing_prev_index = {tensor_name: local_name for tensor_name, local_name in u_out_tensor_name_2_local_name.items() if tensor_name in common_tensor_names}
                 boxing_succ_index = {tensor_name: local_name for tensor_name, local_name in v_in_tensor_name_2_local_name.items() if tensor_name in common_tensor_names}
                 op_graph.add_edge(u, v, boxing_prev_index=boxing_prev_index, boxing_succ_index=boxing_succ_index, common_tensor_names=common_tensor_names)
