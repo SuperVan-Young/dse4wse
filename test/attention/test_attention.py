@@ -6,6 +6,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 import pandas as pd
 import argparse
+import math
 
 from op_graph.module import AttentionModule
 from utils import GpuArchConfig, logger
@@ -28,7 +29,6 @@ def test_attention_module(
     tensor_parallel_size: int,
     **kwargs,
     ):
-    swap_weight_timesteps = attention_heads
 
     attention_module = AttentionModule(
         attention_heads = attention_heads,
@@ -44,7 +44,6 @@ def test_attention_module(
     
     # similar hardware resources like Megatron-2 paper setup for corresponding model
     # assume 1Ghz frequency
-    # FIXME: one more thing, we assume matmul blocking size = 64 in default
     # This is not always correct for all WSE chips
     # We should take number of registers into design consideration
     # arch_config = GpuArchConfig({
@@ -66,11 +65,41 @@ def test_attention_module(
     # })
 
     arch_config = GpuArchConfig()
+    find_best_micro_batch_size(attention_module, arch_config)
 
     attention_module.check_hbm_utilization(arch_config)
     training_throughput = attention_module.get_training_throughput(arch_config)
 
     logger.info(f"Training throughput: {training_throughput} sequence / second")
+
+def find_best_micro_batch_size(attention_module: AttentionModule, arch_config: GpuArchConfig):
+    for handler in logger.handlers:
+        handler.setLevel('WARNING')
+
+    best_training_throughput = 0
+    best_micro_batch_size = -1
+    candidate_micro_batch_size = [2 ** i for i in range(int(math.log2(attention_module.mini_batch_size)) + 1)]
+    for micro_batch_size in candidate_micro_batch_size:
+        try:
+            attention_module.micro_batch_size = micro_batch_size
+            attention_module._op_graph = attention_module._build_op_graph()
+            assert attention_module.check_hbm_utilization(arch_config)
+            throughput = attention_module.get_training_throughput(arch_config)
+            if throughput > best_training_throughput:
+                best_training_throughput = throughput
+                best_micro_batch_size = micro_batch_size
+        except:
+            logger.warning(f"Failure for micro batch size {micro_batch_size}")
+
+    if best_micro_batch_size == -1:
+        logger.warning("Failed to find valid micro batch size")
+
+    for handler in logger.handlers:
+        handler.setLevel('DEBUG')
+    logger.info(f"Best micro batch size {micro_batch_size}")
+    attention_module.micro_batch_size = best_micro_batch_size
+    attention_module._op_graph = attention_module._build_op_graph()
+    
 
 def run_testcase(case=1):
     df = pd.read_excel(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'megatron.xlsx'))
@@ -83,7 +112,8 @@ def run_testcase(case=1):
     for index in ['attention_heads', 'hidden_size', 'number_of_layers', 'tensor_parallel_size', 'model_parallel_size', 'number_of_gpus', 'mini_batch_size']:
         megatron_config[index] = int(megatron_config[index])
     megatron_config['sequence_length'] = 2048
-    megatron_config['micro_batch_size'] = 1 # the smallest size ...
+    # FIXME: search for optimal batch size within HBM limit.
+    megatron_config['micro_batch_size'] = 32
     megatron_config['data_parallel_size'] = megatron_config['number_of_gpus'] // megatron_config['model_parallel_size'] // megatron_config['tensor_parallel_size']
 
     test_attention_module(**megatron_config)

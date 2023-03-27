@@ -257,12 +257,14 @@ class AttentionModule():
         weight_tensor_total_size = sum([tensor.size() for tensor in weight_tensors.values()])
         if forward:
             # allgather weight
-            collective_size = (self.data_parallel_size - 1) / self.data_parallel_size * weight_tensor_total_size 
+            # collective_size = (self.data_parallel_size - 1) / self.data_parallel_size * weight_tensor_total_size 
+            collective_size = self.data_parallel_size * weight_tensor_total_size  # broadcast
             collective_bandwidth = self.tensor_parallel_size * inter_node_bandwidth
             collective_latency = collective_size / collective_bandwidth
         else:
             # reducescatter grad (could be BF16)
-            collective_size = (self.data_parallel_size - 1) / self.data_parallel_size * weight_tensor_total_size 
+            # collective_size = (self.data_parallel_size - 1) / self.data_parallel_size * weight_tensor_total_size 
+            collective_size = self.data_parallel_size * weight_tensor_total_size 
             collective_bandwidth = self.tensor_parallel_size * inter_node_bandwidth
             collective_latency = collective_size / collective_bandwidth
 
@@ -270,13 +272,13 @@ class AttentionModule():
     
     def __activation_collective_latency(self, arch_config: GpuArchConfig, forward: bool):
         if forward:
-            output_tensors = self._op_graph.get_tensors(['output'])
-            output_tensor_size = sum([tensor.size() for tensor in output_tensors.values()])
+            output_tensors = self._op_graph.get_tensors()
+            output_tensor_size = sum([tensor.size() for tensor in output_tensors.values() if tensor.name in ['Z', 'X2_mlp']])
             allreduce_output_latency = 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size * output_tensor_size / arch_config.nvlink_bandwidth
             return allreduce_output_latency
         else:
-            input_tensors = self._op_graph.get_tensors(['input'])
-            input_grad_size = sum([tensor.size() for tensor in input_tensors.values()])
+            input_tensors = self._op_graph.get_tensors()
+            input_grad_size = sum([tensor.size() for tensor in input_tensors.values() if tensor.name in ['X', 'X0_mlp']])
             allreduce_input_latency = 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size * input_grad_size / arch_config.nvlink_bandwidth
             return allreduce_input_latency
 
@@ -287,9 +289,14 @@ class AttentionModule():
 
         single_stage_fp_latency = self.get_fp_latency(arch_config)
         single_stage_bp_latency = self.get_bp_latency(arch_config)
-        pipeline_factor = self.number_of_layers + (self.mini_batch_size // self.micro_batch_size - 1)
+        pipeline_factor = self.model_parallel_size + (self.mini_batch_size // self.micro_batch_size - 1)
         whole_batch_latency = pipeline_factor * (single_stage_bp_latency + single_stage_fp_latency)  # cycles
         sequence_per_second = self.mini_batch_size / whole_batch_latency
+
+        compute_latency = self.__get_propagation_latency(arch_config, forward=True) * 2 + self.__get_propagation_latency(arch_config, forward=False)
+        compute_latency *= self.layer_of_pipeline_stage * (self.mini_batch_size // self.micro_batch_size)
+        logger.info(f"GPU utilization: {compute_latency / whole_batch_latency:.2%}")
+
         return sequence_per_second
 
     def get_fp_latency(self, arch_config: GpuArchConfig):
@@ -310,10 +317,10 @@ class AttentionModule():
         total_latency = input_cross_pipeline_stage_latency + op_graph_fp_latency + allreduce_output_latency + fp_swap_weight_latency
 
         logger.info("Summary for forward propagation latency (latency with same stage number can be overlapped)")
-        logger.info(f"- input cross node latency (1): {int(input_cross_pipeline_stage_latency * 1e9):>15d} ns ({input_cross_pipeline_stage_latency/total_latency:.2%})")
-        logger.info(f"- op graph fp latency      (2): {int(op_graph_fp_latency * 1e9):>15d} ns ({op_graph_fp_latency/total_latency:.2%})")
-        logger.info(f"- fp swap weight latency   (3): {int(fp_swap_weight_latency * 1e9):>15d} ns ({fp_swap_weight_latency/total_latency:.2%})")
-        logger.info(f"- allreduce output latency (4): {int(allreduce_output_latency * 1e9):>15d} ns ({allreduce_output_latency/total_latency:.2%})")
+        logger.info(f"- input cross node latency  (1): {int(input_cross_pipeline_stage_latency * 1e9):>15d} ns ({input_cross_pipeline_stage_latency/total_latency:.2%})")
+        logger.info(f"- op graph fp latency       (2): {int(op_graph_fp_latency * 1e9):>15d} ns ({op_graph_fp_latency/total_latency:.2%})")
+        logger.info(f"- fp swap weight latency    (3): {int(fp_swap_weight_latency * 1e9):>15d} ns ({fp_swap_weight_latency/total_latency:.2%})")
+        logger.info(f"- allreduce output latency  (4): {int(allreduce_output_latency * 1e9):>15d} ns ({allreduce_output_latency/total_latency:.2%})")
 
         return total_latency
     
