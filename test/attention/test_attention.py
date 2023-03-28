@@ -64,7 +64,15 @@ def test_attention_module(
     #     'inter_wafer_bandwidth': 25,         # 200Gb/s infiniband
     # })
 
-    arch_config = GpuArchConfig()
+    arch_config = GpuArchConfig(
+        compute_power = 312e12,
+        gpu_memory_size = 80e9,
+        hbm_bandwidth = 1.94e12,
+        nvlink_bandwidth = 600e9,
+        # nvlink_bandwidth = 4200e9,  # tensor parallel on wafer
+        # nvlink_bandwidth = 25e9,  # tensor parallel across node
+        infiniband_bandwidth = 25e9,
+    )
     find_best_micro_batch_size(attention_module, arch_config)
 
     attention_module.check_hbm_utilization(arch_config)
@@ -96,7 +104,7 @@ def find_best_micro_batch_size(attention_module: AttentionModule, arch_config: G
 
     for handler in logger.handlers:
         handler.setLevel('DEBUG')
-    logger.info(f"Best micro batch size {micro_batch_size}")
+    logger.info(f"Best micro batch size {best_micro_batch_size}")
     attention_module.micro_batch_size = best_micro_batch_size
     attention_module._op_graph = attention_module._build_op_graph()
     
