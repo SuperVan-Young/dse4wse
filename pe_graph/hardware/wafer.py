@@ -39,40 +39,45 @@ class WaferScaleEngine():
     def __build_reticle_graph(self, reticle_config: Dict):
         G = nx.DiGraph()
 
-        # reticle arrays
-        for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width)):
-            reticle = ReticleArray(coordinate=(x, y), **reticle_config)
-            G.add_node(self.__reticle_naming(x, y), reticle=reticle)
+        def add_reticle(x, y, reticle: ReticleArray):
+            G.add_node(self.__reticle_naming(x, y), hw_type='reticle', reticle=reticle)
 
-        def add_reticle_bidirectional_link(x1, y1, x2, y2):
+        def add_dram_port(x, y, dram_port: DramPort):
+            G.add_node(self.__dram_port_naming(x, y), hw_type='dram_port', dram_port=dram_port)
+
+        def add_reticle_2_reticle_bidirectional_link(x1, y1, x2, y2):
             G.add_edge(self.__reticle_naming(x1, y1), self.__reticle_naming(x2, y2))
             G.add_edge(self.__reticle_naming(x2, y2), self.__reticle_naming(x1, y1))
         
-        for x, y in product(range(self.reticle_array_height - 1), range(self.reticle_array_width)):
-            add_reticle_bidirectional_link(x-1, y, x, y)
-        for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width - 1)):
-            add_reticle_bidirectional_link(x, y-1, x, y)
-
-        # dram ports
-        def add_port_reticle_bidirectional_link(xp, yp, xr, yr):
+        def add_port_2_reticle_bidirectional_link(xp, yp, xr, yr):
             G.add_edge(self.__dram_port_naming(xp, yp), self.__reticle_naming(xr, yr))
             G.add_edge(self.__reticle_naming(xr, yr), self.__dram_port_naming(xp, yp))
 
+        # reticle arrays
+        for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width)):
+            reticle = ReticleArray(coordinate=(x, y), **reticle_config)
+            add_reticle(x, y, reticle)
+        for x, y in product(range(self.reticle_array_height - 1), range(self.reticle_array_width)):
+            add_reticle_2_reticle_bidirectional_link(x-1, y, x, y)
+        for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width - 1)):
+            add_reticle_2_reticle_bidirectional_link(x, y-1, x, y)
+
+        # dram ports
         if self.dram_stacking_type == '2d':
             for x in range(0, self.reticle_array_height):
-                G.add_node(self.__dram_port_naming(x, -1), dram_port=DramPort())
-                G.add_node(self.__dram_port_naming(x, self.reticle_array_width), dram_port=DramPort())
-                add_port_reticle_bidirectional_link(x, -1, x, 0)
-                add_port_reticle_bidirectional_link(x, self.reticle_array_width, x, self.reticle_array_width-1)
+                add_dram_port(x, -1, DramPort())
+                add_dram_port(x, self.reticle_array_width, DramPort())
+                add_port_2_reticle_bidirectional_link(x, -1, x, 0)
+                add_port_2_reticle_bidirectional_link(x, self.reticle_array_width, x, self.reticle_array_width-1)
             for y in range(0, self.reticle_array_width):
-                G.add_node(self.__dram_port_naming(-1, y), dram_port=DramPort())
-                G.add_node(self.__dram_port_naming(self.reticle_array_height, y), dram_port=DramPort())
-                add_port_reticle_bidirectional_link(-1, y, 0, y)
-                add_port_reticle_bidirectional_link(self.reticle_array_height, y, self.reticle_array_height-1, 0)
+                add_dram_port(-1, y, DramPort())
+                add_dram_port(self.reticle_array_height, y, DramPort())
+                add_port_2_reticle_bidirectional_link(-1, y, 0, y)
+                add_port_2_reticle_bidirectional_link(self.reticle_array_height, y, self.reticle_array_height-1, 0)
         elif self.dram_stacking_type == '3d':
             for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width)):
-                G.add_node(self.__reticle_naming(x, y), dram_port=DramPort())
-                add_port_reticle_bidirectional_link(x, y, x, y)
+                add_dram_port(x, y, DramPort())
+                add_port_2_reticle_bidirectional_link(x, y, x, y)
         else:
             raise NotImplementedError
 
