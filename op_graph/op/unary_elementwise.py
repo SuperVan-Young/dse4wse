@@ -44,7 +44,7 @@ class UnaryElementwiseOperator(Operator):
         # Add default placement for single core scenarios
         if 1 in self.num_core_range:
             sbp_sig = SbpSignature(
-                Placement(shape=[1]),
+                Placement(shape=[1], interconnect_types=['noc']),
                 [BroadcastSbpParallel()],
             )
             sbp_sigs = {

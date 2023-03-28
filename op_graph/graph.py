@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Dict, Union
+from typing import Dict, Union, List
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -10,7 +10,7 @@ from networkx import DiGraph
 from itertools import chain
 
 from op import Operator
-from utils import logger, ArchConfig
+from utils import logger, ArchConfig, TensorInfo, calc_comm_cost_on_same_devices, calc_comm_cost_on_disjoint_devices
 
 class OpGraph(DiGraph):
 
@@ -26,10 +26,63 @@ class OpGraph(DiGraph):
             return {name: 1 for name in self.nodes()}
         else:
             return self._duplication_table
+        
+    def get_tensors(self, kind=['weight', 'input', 'output', 'activation', 'constant']) -> Dict[str, TensorInfo]:
+        tensors = {}
+        for op_name, op in self.nodes(data='operator'):
+            op: Operator
+            for tensor_name, tensor in chain(op.input_tensors.items(), op.output_tensors.items()):
+                if tensor.kind in kind:
+                    tensors[tensor.name] = tensor
+        return tensors
+    
+    def get_propagation_latency(self, arch_config: ArchConfig, forward=True) -> float:
+        """Sequentially compute each operation and transmit data between operators
+        Consider boxing separately with propagation
+        """
+        total_compute_latency = 0
+        total_boxing_latency = 0
 
+        for op_name, op in self.nodes(data='operator'):
+            op: Operator
+            if forward:
+                compute_latency = op.get_fp_latency(op.final_intra_sbp_sigs, arch_config)
+            else:
+                compute_latency = op.get_bp_latency(op.final_intra_sbp_sigs, arch_config)
+            total_compute_latency += compute_latency
+
+        total_latency = total_compute_latency + total_boxing_latency
+        return total_latency
+
+    def get_boxing_latency(self, prev: str, succ: str, arch_config: ArchConfig) -> float:
+        edata = self.edges[prev, succ]
+        common_tensor_names = edata['common_tensor_names']
+        boxing_prev_index = edata['boxing_prev_index']
+        boxing_succ_index = edata['boxing_succ_index']
+
+        prev_op = self.nodes[prev]['operator']
+        succ_op = self.nodes[succ]['operator']
+
+        for common_tensor_name in common_tensor_names:
+            prev_local_name = boxing_prev_index[common_tensor_name]
+            succ_local_name = boxing_succ_index[common_tensor_name]
+            prev_inter_sbp_sig = prev_op.final_inter_sbp_sigs[prev_local_name]
+            succ_inter_sbp_sig = succ_op.final_inter_sbp_sigs[succ_local_name]
+            tensor = prev_op.output_tensors[prev_local_name]
+
+            if prev_inter_sbp_sig.placement == succ_inter_sbp_sig.placement:
+                return calc_comm_cost_on_same_devices(tensor, prev_inter_sbp_sig, succ_inter_sbp_sig, arch_config)
+            else:
+                # we don't know how these devices are interconnected 
+                # for simplicity, we assume its reticle
+                # FIXME: finish this part tomorrow!
+                return calc_comm_cost_on_disjoint_devices(tensor, prev_inter_sbp_sig, succ_inter_sbp_sig, arch_config)
+            
     def get_inter_layer_sbp_signatures(self, node):
         """ Get input tensor's sbp signature on previous tensors
         """
+        # FIXME: use local name! unify representation with BaseOperator
+        logger.warn("Deprecated in the future")
         inter_layer_sbp_signatures = {}
 
         cur_op = self.nodes[node]['operator']
@@ -138,3 +191,31 @@ class OpGraph(DiGraph):
         assert total_latency < np.inf
 
         return total_latency
+    
+def build_op_graph_from_operator_list(operators: List[Operator]):
+    op_graph = OpGraph()
+
+    for op in operators:
+        name = op.name
+        op_graph.add_node(name)
+        op_graph.nodes[name]['operator'] = op
+
+    # connect edges
+    for u, u_op in op_graph.nodes(data='operator'):
+        u_op: Operator
+        u_out_tensor_name_2_local_name = {tensor.name: local_name for local_name, tensor in u_op.output_tensors.items()}
+        for v, v_op in op_graph.nodes(data='operator'):
+            v_op: Operator
+            v_in_tensor_name_2_local_name = {tensor.name: local_name for local_name, tensor in v_op.input_tensors.items()}
+            common_tensor_names = set(u_out_tensor_name_2_local_name.keys()) & set(v_in_tensor_name_2_local_name.keys())
+            if common_tensor_names:
+                # check if common tensors have the same shape
+                for common_tensor_name in common_tensor_names:
+                    perv_tensor = u_op.output_tensors[u_out_tensor_name_2_local_name[common_tensor_name]]
+                    succ_tensor = v_op.input_tensors[v_in_tensor_name_2_local_name[common_tensor_name]]
+                    assert tuple(perv_tensor.shape) == tuple(succ_tensor.shape), (perv_tensor.shape, succ_tensor.shape)
+                boxing_prev_index = {tensor_name: local_name for tensor_name, local_name in u_out_tensor_name_2_local_name.items() if tensor_name in common_tensor_names}
+                boxing_succ_index = {tensor_name: local_name for tensor_name, local_name in v_in_tensor_name_2_local_name.items() if tensor_name in common_tensor_names}
+                op_graph.add_edge(u, v, boxing_prev_index=boxing_prev_index, boxing_succ_index=boxing_succ_index, common_tensor_names=common_tensor_names)
+
+    return op_graph

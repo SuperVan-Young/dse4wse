@@ -62,12 +62,12 @@ class BertOpGraphConstructor(OpGraphConstructor):
                 'token_type_ids': torch.ones((batch_size, max_seq_len)).long(),
                 'position_ids': torch.ones((1, max_seq_len)).long(),
             }
-            torch.onnx.export(model, args=(inputs,), f=model_path, export_params=False)
+            torch.onnx.export(model, args=(inputs,), f=model_path, export_params=False, training=torch.onnx.TrainingMode.TRAINING)
 
             logger.info(f"Simplifying model {model_path}")
             
             onnx_model = onnx.load(model_path, load_external_data=False)
-            onnx_model, check = simplify(onnx_model)
+            onnx_model, check = simplify(onnx_model, skip_constant_folding=True)
             assert check, f"Failed to simplify onnx model {model_path}"
             onnx.save(onnx_model, model_path)
 
