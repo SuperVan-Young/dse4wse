@@ -30,11 +30,6 @@ class WaferScaleEngine():
         assert dram_stacking_type in ['2d', '3d']
 
         self._reticle_graph = self.__build_reticle_graph(reticle_config)
-        self._reticle_tasks = []
-        self.reticle_mapper = None    # virtual_reticle_id -> coordinate
-        self.dram_port_mapper = None  # virtual_port_id -> coordinate
-        self.reticle_router = None    # (src_coordinate, dst_coordinate) -> path [(u, v)]
-
     
     def __build_reticle_graph(self, reticle_config: Dict):
         G = nx.DiGraph()

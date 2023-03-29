@@ -7,7 +7,7 @@ import networkx as nx
 from networkx import DiGraph
 import numpy as np
 
-class BaseReticleTask():
+class BaseReticleTask(ABC):
     def __init__(self, virtual_reticle_id: int, **kwargs):
         self.virtual_reticle_id = virtual_reticle_id
         self.data_parallel_idx = kwargs.get('data_parallel_idx', None)

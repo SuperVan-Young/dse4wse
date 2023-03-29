@@ -9,3 +9,6 @@ from reticle_task import (
     PeerAccessReticleTask,
     FusedReticleTask,
 )
+from reticle_task_gen import (
+    ThreeStageReticleTaskGenerator
+)

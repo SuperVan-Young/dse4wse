@@ -7,28 +7,20 @@ from typing import Tuple, List
 Coordinate = Tuple[int, int]
 RoutingPath = List[Coordinate]
 
+from reticle_mapper import BaseReticleMapper
+from dram_port_mapper import BaseDramPortMapper
+from reticle_router import BaseReticleRouter
+
 class WseMapper():
 
     def __init__(self, 
-                 reticle_mapper_type: str,
-                 dram_port_mapper_type: str,
-                 reticle_router_type: str,
+                 reticle_mapper: BaseReticleMapper,
+                 dram_port_mapper: BaseDramPortMapper,
+                 reticle_router: BaseReticleRouter
                  ) -> None:
-        self._reticle_mapper = self.__init_reticle_mapper(reticle_mapper_type)
-        self._dram_port_mapper = self.__init_dram_port_mapper(dram_port_mapper_type)
-        self._reticle_router = self.__init_reticle_router(reticle_router_type)
-
-    def __init_reticle_mapper(self, reticle_mapper_type: str):
-        # TODO:
-        raise NotImplementedError
-    
-    def __init_dram_port_mapper(self, dram_port_mapper_type: str):
-        # TODO:
-        raise NotImplementedError
-    
-    def __init_reticle_router(self, reticle_router_type: str):
-        # TODO:
-        raise NotImplementedError
+        self._reticle_mapper = reticle_mapper
+        self._dram_port_mapper = dram_port_mapper
+        self._reticle_router = reticle_router
     
     def find_physical_reticle_coordinate(self, virtual_reticle_id: int) -> Coordinate:
         return self._reticle_mapper(virtual_reticle_id)
