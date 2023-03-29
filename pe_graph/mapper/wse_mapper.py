@@ -2,14 +2,18 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname((os.path.dirname(os.path.abspath(__file__)))))
 
 from typing import Tuple, List
 Coordinate = Tuple[int, int]
 RoutingPath = List[Coordinate]
 
-from reticle_mapper import BaseReticleMapper
-from dram_port_mapper import BaseDramPortMapper
-from reticle_router import BaseReticleRouter
+from hardware import WaferScaleEngine
+from task import BaseWaferTask
+
+from reticle_mapper import BaseReticleMapper, XYReticleMapper
+from dram_port_mapper import BaseDramPortMapper, HashDramPortMapper
+from reticle_router import BaseReticleRouter, XYReticleRouter
 
 class WseMapper():
     """Leave the problem of instantiating children mappers to users
@@ -36,3 +40,27 @@ class WseMapper():
         assert dst_type in ['reticle', 'dram_port']
         assert not (src_type == 'dram_port' and dst_type == 'dram_port')
         return self._reticle_router(src, dst, src_type, dst_type)
+    
+def get_default_mapper(wse: WaferScaleEngine):
+    reticle_mapper_config = {
+        'reticle_array_height': wse.reticle_array_height,
+        'reticle_array_width': wse.reticle_array_width,
+    }
+    reticle_mapper = XYReticleMapper(**reticle_mapper_config)
+
+    dram_port_mapper_config = {
+        'wafer_scale_engine': wse,
+    }
+    dram_port_mapper = HashDramPortMapper(**dram_port_mapper_config)
+
+    reticle_router_config = {
+        'dram_stacking_type': wse.dram_stacking_type,
+    }
+    reticle_router = XYReticleRouter(**reticle_router_config)
+
+    wse_mapper = WseMapper(
+        reticle_mapper=reticle_mapper,
+        dram_port_mapper=dram_port_mapper,
+        reticle_router=reticle_router,
+    )
+    return wse_mapper
