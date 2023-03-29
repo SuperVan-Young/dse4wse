@@ -12,6 +12,9 @@ from dram_port_mapper import BaseDramPortMapper
 from reticle_router import BaseReticleRouter
 
 class WseMapper():
+    """Leave the problem of instantiating children mappers to users
+    We only provide an API to users.
+    """
 
     def __init__(self, 
                  reticle_mapper: BaseReticleMapper,
@@ -31,4 +34,5 @@ class WseMapper():
     def find_inter_reticle_routing_path(self, src: Coordinate, dst: Coordinate, src_type: str, dst_type: str) -> RoutingPath:
         assert src_type in ['reticle', 'dram_port']
         assert dst_type in ['reticle', 'dram_port']
+        assert not (src_type == 'dram_port' and dst_type == 'dram_port')
         return self._reticle_router(src, dst, src_type, dst_type)

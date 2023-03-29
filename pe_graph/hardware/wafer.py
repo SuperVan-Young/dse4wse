@@ -3,7 +3,7 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from typing import Dict
+from typing import Dict, List
 from itertools import product
 import networkx as nx
 
@@ -35,10 +35,10 @@ class WaferScaleEngine():
         G = nx.DiGraph()
 
         def add_reticle(x, y, reticle: ReticleArray):
-            G.add_node(self.__reticle_naming(x, y), hw_type='reticle', reticle=reticle)
+            G.add_node(self.__reticle_naming(x, y), hw_type='reticle', coordinate=(x,y), reticle=reticle)
 
         def add_dram_port(x, y, dram_port: DramPort):
-            G.add_node(self.__dram_port_naming(x, y), hw_type='dram_port', dram_port=dram_port)
+            G.add_node(self.__dram_port_naming(x, y), hw_type='dram_port', coordinate=(x,y), dram_port=dram_port)
 
         def add_reticle_2_reticle_bidirectional_link(x1, y1, x2, y2):
             G.add_edge(self.__reticle_naming(x1, y1), self.__reticle_naming(x2, y2))
@@ -99,3 +99,6 @@ class WaferScaleEngine():
     
     def __dram_port_naming(self, x: int, y: int) -> str:
         return f"d_{x}_{y}"
+    
+    def get_dram_port_coordinate_list(self) -> List[DramPort]:
+        return [ndata['coordinate'] for name, ndata in self._reticle_graph.nodes(data=True) if ndata['hm_type'] == 'dram_port']
