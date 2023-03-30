@@ -7,7 +7,7 @@ from typing import Dict, List
 from itertools import product
 import networkx as nx
 
-from reticle import ReticleArray
+from reticle import Reticle
 from dram_port import DramPort
 
 class WaferScaleEngine():
@@ -27,22 +27,25 @@ class WaferScaleEngine():
         self.inter_reticle_bandwidth = inter_reticle_bandwidth
         self.dram_bandwidth = dram_bandwidth
         self.dram_stacking_type = self.dram_stacking_type
+        self.reticle_config = reticle_config
         assert dram_stacking_type in ['2d', '3d']
 
-        self._reticle_graph = self.__build_reticle_graph(reticle_config)
+        self._reticle_graph = self.__build_reticle_graph()
+
+    @property
+    def reticle_compute_power(self):
+        return Reticle.get_compute_power(self.reticle_config)
     
-    def __build_reticle_graph(self, reticle_config: Dict):
+    def __build_reticle_graph(self):
         # build graph skeleton
         H, W = self.reticle_array_height, self.reticle_array_width
-        G = nx.grid_2d_graph(m=range(-1, H+1), n=range(-1, W+1), create_using=nx.DiGraph)
+        G = nx.grid_2d_graph(H, W, create_using=nx.DiGraph)
         G : nx.DiGraph
-        for node in [(-1, -1), (H, -1), (-1, W), (H, W)]:
-            G.remove_node(node)
         for node, ndata in G.nodes(data=True):
             ndata['reticle'] = None
             ndata['dram_port'] = None
 
-        def add_reticle(x, y, reticle: ReticleArray):
+        def add_reticle(x, y, reticle: Reticle):
             G.nodes[(x, y)]['reticle'] = reticle
 
         def add_dram_port(x, y, dram_port: DramPort):
@@ -50,17 +53,17 @@ class WaferScaleEngine():
 
         # reticle arrays
         for x, y in product(range(H), range(W)):
-            reticle = ReticleArray(coordinate=(x, y), **reticle_config)
+            reticle = Reticle(coordinate=(x, y), **self.reticle_config)
             add_reticle(x, y, reticle)
 
         # dram ports
         if self.dram_stacking_type == '2d':
             for x in range(0, self.reticle_array_height):
-                add_dram_port(x, -1, DramPort())
-                add_dram_port(x, self.reticle_array_width, DramPort())
+                add_dram_port(x, 0, DramPort())
+                add_dram_port(x, self.reticle_array_width - 1, DramPort())
             for y in range(0, self.reticle_array_width):
-                add_dram_port(-1, y, DramPort())
-                add_dram_port(self.reticle_array_height, y, DramPort())
+                add_dram_port(0, y, DramPort())
+                add_dram_port(self.reticle_array_height - 1, y, DramPort())
         elif self.dram_stacking_type == '3d':
             for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width)):
                 add_dram_port(x, y, DramPort())
@@ -72,7 +75,7 @@ class WaferScaleEngine():
     def get_node_from_coordinate(self, x: int, y: int):
         return self.nodes([x, y])  # for direct graph operations
             
-    def get_reticle_from_coordinate(self, x: int, y: int) -> ReticleArray:
+    def get_reticle_from_coordinate(self, x: int, y: int) -> Reticle:
         assert x >= 0 and x < self.reticle_array_height
         assert y >= 0 and y < self.reticle_array_width
         ret = self._reticle_graph.nodes[(x, y)]['reticle']
