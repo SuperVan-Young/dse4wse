@@ -1,6 +1,4 @@
 
-import os
-import sys
 import pandas as pd
 import numpy as np
 import math
@@ -10,8 +8,7 @@ from typing import Dict, List, Tuple, Container, Union
 from itertools import chain, combinations, combinations_with_replacement
 from copy import deepcopy
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from utils import (
+from dse4wse.utils import (
     ArchConfig, SbpSignature, TensorInfo, calc_comm_cost_on_same_devices,
     derive_output_sbp_signatures, logger, get_local_tensor_info, TrainingConfig,
     SplitSbpParallel, BroadcastSbpParallel

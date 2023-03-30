@@ -6,13 +6,9 @@ from itertools import chain
 from functools import reduce
 from interval import interval
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from graph import OpGraph
-from op import BaseOperator, UnaryElementwiseOperator, BinaryElementwiseOperator, MatMulOperator
-from utils import logger, ArchConfig
+from dse4wse.op_graph.graph import OpGraph
+from dse4wse.op_graph.op import BaseOperator, UnaryElementwiseOperator, BinaryElementwiseOperator, MatMulOperator
+from dse4wse.utils import logger, ArchConfig
 
 class CoreAllocator():
     def __init__(self, arch_config: ArchConfig, num_wafer=1) -> None:

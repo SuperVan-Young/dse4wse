@@ -12,6 +12,7 @@ import numpy as np
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import BaseWaferTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
 from dse4wse.pe_graph.mapper import WseMapper
+from dse4wse.utils import logger
 
 from .base import BaseWseEvaluator
 

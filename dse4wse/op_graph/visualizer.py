@@ -1,7 +1,8 @@
 
 import networkx as nx
 import matplotlib.pyplot as plt
-from graph import OpGraph
+
+from dse4wse.op_graph.graph import OpGraph
 
 def visualize_op_graph(op_graph: OpGraph):
     for node in op_graph.nodes():

@@ -1,16 +1,12 @@
-import os
-import sys
 from typing import Dict, Union, List
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import networkx as nx
 import numpy as np
 from networkx import DiGraph
 from itertools import chain
 
-from op import BaseOperator
-from utils import logger, ArchConfig, TensorInfo, calc_comm_cost_on_same_devices, calc_comm_cost_on_disjoint_devices
+from dse4wse.op_graph.op import BaseOperator
+from dse4wse.utils import logger, ArchConfig, TensorInfo, calc_comm_cost_on_same_devices, calc_comm_cost_on_disjoint_devices
 
 class OpGraph(DiGraph):
 

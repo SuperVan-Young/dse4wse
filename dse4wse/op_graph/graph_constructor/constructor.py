@@ -3,13 +3,9 @@ import sys
 from abc import ABC, abstractmethod
 from typing import Dict
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from utils import logger, TensorInfo
-from graph import OpGraph, build_op_graph_from_operator_list
-from op.build_op import build_operator
+from dse4wse.utils import logger, TensorInfo
+from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
+from dse4wse.op_graph.op.build_op import build_operator
 
 MODEL_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
 if not os.path.exists(MODEL_CACHE_DIR):

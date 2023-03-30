@@ -4,15 +4,12 @@ import os
 import sys
 from typing import Dict
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 from utils import logger
 from transformers import BertModel, BertConfig
 from onnxsim import simplify
-from constructor import MODEL_CACHE_DIR, OpGraphConstructor
-from graph import OpGraph
+
+from .constructor import MODEL_CACHE_DIR, OpGraphConstructor
+from dse4wse.op_graph.graph import OpGraph
 
 # from pretrained model
 BERT_CONFIG = BertConfig(**{

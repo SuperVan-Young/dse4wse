@@ -1,15 +1,12 @@
 
-import os
-import sys
 from typing import Dict
 import numpy as np
 import pandas as pd
 from itertools import combinations, product
 from functools import reduce
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from base import BaseOperator
-from utils import (
+from .base import BaseOperator
+from dse4wse.utils import (
     ArchConfig, SbpSignature, TensorInfo, factoring, Placement, SplitSbpParallel, PartialSbpParallel,
     BroadcastSbpParallel, multidirectional_broadcasting, logger, transpose, get_local_tensor_info, TrainingConfig,
     factoring,

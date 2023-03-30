@@ -1,17 +1,11 @@
-import os
-import sys
 from typing import List, Dict, Union
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from dse4wse.utils import logger, TensorInfo
 
-from utils import logger, TensorInfo
-
-from base import BaseOperator
-from unary_elementwise import UnaryElementwiseOperator
-from binary_elementwise import BinaryElementwiseOperator
-from matmul import MatMulOperator
+from .base import BaseOperator
+from .unary_elementwise import UnaryElementwiseOperator
+from .binary_elementwise import BinaryElementwiseOperator
+from .matmul import MatMulOperator
 
 def build_operator(name: str, op_type: str, 
                    input_tensors: List[TensorInfo], 

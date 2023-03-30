@@ -1,13 +1,8 @@
-import os
-import sys
 from copy import deepcopy
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from graph import OpGraph
-from op import BaseOperator
-from utils import logger, ArchConfig
+from dse4wse.op_graph.graph import OpGraph
+from dse4wse.op_graph.op import BaseOperator
+from dse4wse.utils import logger, ArchConfig
 
 class LocalSbpConstructor():
     """Local SBP parallel strategy constructor
