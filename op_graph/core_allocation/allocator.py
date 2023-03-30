@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from graph import OpGraph
-from op import Operator, UnaryElementwiseOperator, BinaryElementwiseOperator, MatMulOperator
+from op import BaseOperator, UnaryElementwiseOperator, BinaryElementwiseOperator, MatMulOperator
 from utils import logger, ArchConfig
 
 class CoreAllocator():
@@ -40,7 +40,7 @@ class CoreAllocator():
 
         op_graph_ = deepcopy(op_graph)
         for name, op in op_graph_.nodes(data='operator'):
-            op: Operator
+            op: BaseOperator
             op.num_core_range = op_name_2_final_core_range[name]
 
         total_alloc_cores = int(reduce(lambda x, y: x + y, [get_max_alloc_core(op.num_core_range) * duplication_table[name] for name, op in op_graph_.nodes(data='operator')]))
@@ -67,7 +67,7 @@ class CoreAllocator():
         # allocate remaining cores to operators who requires it
         total_cores -= reduce(lambda x, y: x + y, [core * duplication_table[name] for name, core in op_name_2_min_alloc_core.items()])
 
-        def require_extra_core(op: Operator) -> int:
+        def require_extra_core(op: BaseOperator) -> int:
             factor = None
             if isinstance(op, UnaryElementwiseOperator):
                 factor = 2 - 1
@@ -97,7 +97,7 @@ class CoreAllocator():
     def _allocate_on_compute(self, op_graph: OpGraph, total_cores: int) -> Dict[str, interval]:
         duplication_table = op_graph.duplication_table
         
-        def require_compute_core(op: Operator) -> int:
+        def require_compute_core(op: BaseOperator) -> int:
             factor = None
             if isinstance(op, UnaryElementwiseOperator):
                 factor = 0

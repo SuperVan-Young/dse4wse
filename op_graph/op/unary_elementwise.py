@@ -7,13 +7,13 @@ from itertools import combinations, product
 from functools import reduce
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from base import Operator
+from base import BaseOperator
 from utils import (
     ArchConfig, Placement, SplitSbpParallel, BroadcastSbpParallel, SbpSignature, TensorInfo, factoring
 )
 
 
-class UnaryElementwiseOperator(Operator):
+class UnaryElementwiseOperator(BaseOperator):
     def __init__(self, name: str, op_type: str, input_tensors: Dict[str, TensorInfo], output_tensors: Dict[str, TensorInfo], 
                  mac_per_element=1, *args, **kwargs) -> None:
         super().__init__(name, op_type, input_tensors, output_tensors, *args, **kwargs)

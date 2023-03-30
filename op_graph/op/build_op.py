@@ -8,14 +8,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from utils import logger, TensorInfo
 
-from base import Operator
+from base import BaseOperator
 from unary_elementwise import UnaryElementwiseOperator
 from binary_elementwise import BinaryElementwiseOperator
 from matmul import MatMulOperator
 
 def build_operator(name: str, op_type: str, 
                    input_tensors: List[TensorInfo], 
-                   output_tensors: List[TensorInfo]) -> Operator:
+                   output_tensors: List[TensorInfo]) -> BaseOperator:
     
     # Unary Elementwise Operators
     if op_type in ['Log', 'Erf', 'Tanh']:

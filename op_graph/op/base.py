@@ -17,7 +17,7 @@ from utils import (
     SplitSbpParallel, BroadcastSbpParallel
 )
 
-class Operator(ABC):
+class BaseOperator(ABC):
     """Base class of Operators
     An operator is executed on a logical device constituted by reticles and cores,
     that have local SRAM and 2d-mesh interconnection.

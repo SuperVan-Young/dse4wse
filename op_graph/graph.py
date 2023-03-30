@@ -9,7 +9,7 @@ import numpy as np
 from networkx import DiGraph
 from itertools import chain
 
-from op import Operator
+from op import BaseOperator
 from utils import logger, ArchConfig, TensorInfo, calc_comm_cost_on_same_devices, calc_comm_cost_on_disjoint_devices
 
 class OpGraph(DiGraph):
@@ -30,7 +30,7 @@ class OpGraph(DiGraph):
     def get_tensors(self, kind=['weight', 'input', 'output', 'activation', 'constant']) -> Dict[str, TensorInfo]:
         tensors = {}
         for op_name, op in self.nodes(data='operator'):
-            op: Operator
+            op: BaseOperator
             for tensor_name, tensor in chain(op.input_tensors.items(), op.output_tensors.items()):
                 if tensor.kind in kind:
                     tensors[tensor.name] = tensor
@@ -44,7 +44,7 @@ class OpGraph(DiGraph):
         total_boxing_latency = 0
 
         for op_name, op in self.nodes(data='operator'):
-            op: Operator
+            op: BaseOperator
             if forward:
                 compute_latency = op.get_fp_latency(op.final_intra_sbp_sigs, arch_config)
             else:
@@ -86,11 +86,11 @@ class OpGraph(DiGraph):
         inter_layer_sbp_signatures = {}
 
         cur_op = self.nodes[node]['operator']
-        cur_op: Operator
+        cur_op: BaseOperator
         input_tensor_global_names = [tensor_info.name for tensor_info in cur_op.input_tensors.values()]
         for prev in self.predecessors(node):
             prev_op = self.nodes[prev]['operator']
-            prev_op: Operator
+            prev_op: BaseOperator
             for local_name, tensor_info in prev_op.output_tensors.items():
                 global_name = tensor_info.name
                 if global_name in input_tensor_global_names:
@@ -100,7 +100,7 @@ class OpGraph(DiGraph):
     def profile_core_allocation(self):
         logger.info(f"Profiling core allocation of OP graph {self.name}")
         for node, op in self.nodes(data='operator'):
-            op: Operator
+            op: BaseOperator
             logger.info(f"{node}: {op.num_core_range}")
             
             upper_bound = max([x.sup for x in op.num_core_range.extrema])
@@ -110,7 +110,7 @@ class OpGraph(DiGraph):
     def profile_final_sbp_signatures(self):
         logger.info(f"Profiling final SBP signatures of OP graph {self.name}")
         for node, op in self.nodes(data='operator'):
-            op: Operator
+            op: BaseOperator
             logger.info(f"{node}: {op.final_sbp_signatures}")
 
     def profile_performance(self, arch_config: ArchConfig, in_detail=False):
@@ -130,13 +130,13 @@ class OpGraph(DiGraph):
         op_category_2_report_summary = {}
 
         for node, op in self.nodes(data='operator'):
-            op: Operator
+            op: BaseOperator
 
             inter_layer_sbp_signatures = self.get_inter_layer_sbp_signatures(node)
             latency_report = op.estimate_cost(op.final_sbp_signatures, arch_config, inter_layer_sbp_signatures, detailed_report=True)
 
             if in_detail:
-                logger.info(f"Operator: {node}")
+                logger.info(f"BaseOperator: {node}")
                 for name, tensor_info in op.input_tensors.items():
                     logger.info(f"    [Input] {name}: {tensor_info.name}")
                 for name, tensor_info in op.input_tensors.items():
@@ -192,7 +192,7 @@ class OpGraph(DiGraph):
 
         return total_latency
     
-def build_op_graph_from_operator_list(operators: List[Operator]):
+def build_op_graph_from_operator_list(operators: List[BaseOperator]):
     op_graph = OpGraph()
 
     for op in operators:
@@ -202,10 +202,10 @@ def build_op_graph_from_operator_list(operators: List[Operator]):
 
     # connect edges
     for u, u_op in op_graph.nodes(data='operator'):
-        u_op: Operator
+        u_op: BaseOperator
         u_out_tensor_name_2_local_name = {tensor.name: local_name for local_name, tensor in u_op.output_tensors.items()}
         for v, v_op in op_graph.nodes(data='operator'):
-            v_op: Operator
+            v_op: BaseOperator
             v_in_tensor_name_2_local_name = {tensor.name: local_name for local_name, tensor in v_op.input_tensors.items()}
             common_tensor_names = set(u_out_tensor_name_2_local_name.keys()) & set(v_in_tensor_name_2_local_name.keys())
             if common_tensor_names:

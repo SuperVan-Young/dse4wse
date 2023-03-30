@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from itertools import chain
 
 from graph import OpGraph, build_op_graph_from_operator_list
-from op import MatMulOperator, Operator
+from op import MatMulOperator, BaseOperator
 from utils import TensorInfo, TrainingConfig, GpuArchConfig, logger
 from math import ceil
 
