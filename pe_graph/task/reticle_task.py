@@ -3,6 +3,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from abc import ABC, abstractmethod
+from typing import List
 import networkx as nx
 from networkx import DiGraph
 import numpy as np
@@ -62,3 +63,6 @@ class FusedReticleTask(BaseReticleTask):
     @property
     def task_type(self):
         return 'fused'
+    
+    def get_subtask_list(self) -> List[BaseReticleTask]:
+        return [task for _, task in self.task_graph.nodes(data='task')]

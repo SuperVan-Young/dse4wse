@@ -21,13 +21,16 @@ class ListWaferTask(BaseWaferTask):
         self.index = 0
         return self
 
-    def __next__(self):
+    def __next__(self) -> BaseReticleTask:
         if self.index >= len(self.data):
             raise StopIteration
         value = self.data[self.index]
         self.index += 1
         return value
-
+    
+    def __len__(self) -> int:
+        return len(self.data)
+    
     def append(self, value: BaseReticleTask):
-        assert isinstance(task, BaseReticleTask)
+        assert isinstance(value, BaseReticleTask)
         self.data.append(value)

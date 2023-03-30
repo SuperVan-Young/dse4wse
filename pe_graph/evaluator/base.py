@@ -6,18 +6,21 @@ sys.path.append(os.path.dirname((os.path.dirname(os.path.abspath(__file__)))))
 
 from abc import ABC, abstractmethod
 from hardware import WaferScaleEngine
-
+from task import BaseWaferTask
+from mapper import WseMapper
 
 class BaseWseEvaluator(ABC):
-    
-    @abstractmethod
-    def get_throughput(self, wse: WaferScaleEngine) -> float:
-        raise NotImplementedError
+
+    def __init__(self,
+                 hardware: WaferScaleEngine, 
+                 task: BaseWaferTask,
+                 mapper: WseMapper,
+                 ) -> None:
+        super().__init__()
+        self.hardware = hardware
+        self.task = task
+        self.mapper = mapper
 
     @abstractmethod
-    def get_fp_latency(self, wse: WaferScaleEngine) -> float:
-        raise NotImplementedError
-    
-    @abstractmethod
-    def get_bp_latency(self, wse: WaferScaleEngine) -> float:
+    def get_total_latency(self) -> float:
         raise NotImplementedError
