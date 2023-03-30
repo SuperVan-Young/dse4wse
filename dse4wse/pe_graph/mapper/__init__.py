@@ -1,0 +1,1 @@
+from .wse_mapper import WseMapper, get_default_mapper
