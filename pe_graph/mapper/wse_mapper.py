@@ -6,7 +6,9 @@ sys.path.append(os.path.dirname((os.path.dirname(os.path.abspath(__file__)))))
 
 from typing import Tuple, List
 Coordinate = Tuple[int, int]
-RoutingPath = List[Coordinate]
+Link = Tuple[Coordinate, Coordinate]
+Path = List[Coordinate]
+LinkList = List[Link]
 
 from hardware import WaferScaleEngine
 from task import BaseWaferTask
@@ -35,11 +37,21 @@ class WseMapper():
     def find_physical_dram_port_coordinate(self, virtual_dram_port_id: int) -> Coordinate:
         return self._dram_port_mapper(virtual_dram_port_id)
     
-    def find_inter_reticle_routing_path(self, src: Coordinate, dst: Coordinate, src_type: str, dst_type: str) -> RoutingPath:
-        assert src_type in ['reticle', 'dram_port']
-        assert dst_type in ['reticle', 'dram_port']
-        assert not (src_type == 'dram_port' and dst_type == 'dram_port')
-        return self._reticle_router(src, dst, src_type, dst_type)
+    def find_read_dram_routing_path(self, reticle_coordinate: Coordinate, dram_port_coordinate: Coordinate) -> LinkList:
+        return self.__path_2_link_list(self._reticle_mapper(dram_port_coordinate, reticle_coordinate))
+    
+    def find_write_dram_routing_path(self, reticle_coordinate: Coordinate, dram_port_coordinate: Coordinate) -> LinkList:
+        return self.__path_2_link_list(self._reticle_mapper(reticle_coordinate, dram_port_coordinate))
+    
+    def find_read_peer_routing_path(self, reticle_coordinate: Coordinate, peer_reticle_coordinate: Coordinate) -> LinkList:
+        return self.__path_2_link_list(self._reticle_mapper(peer_reticle_coordinate, reticle_coordinate))
+    
+    def find_write_peer_routing_path(self, reticle_coordinate: Coordinate, peer_reticle_coordinate: Coordinate) -> LinkList:
+        return self.__path_2_link_list(self._reticle_mapper(reticle_coordinate, peer_reticle_coordinate))
+    
+    def __path_2_link_list(self, path: Path) -> LinkList:
+        return [(path[i], path[i+1]) for i in range(len(path) - 1)]
+
     
 def get_default_mapper(wse: WaferScaleEngine):
     reticle_mapper_config = {
@@ -54,7 +66,6 @@ def get_default_mapper(wse: WaferScaleEngine):
     dram_port_mapper = HashDramPortMapper(**dram_port_mapper_config)
 
     reticle_router_config = {
-        'dram_stacking_type': wse.dram_stacking_type,
     }
     reticle_router = XYReticleRouter(**reticle_router_config)
 

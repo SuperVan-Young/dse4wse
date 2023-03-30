@@ -13,7 +13,7 @@ class HashDramPortMapper(BaseDramPortMapper):
                  wafer_scale_engine,
                  **kwargs) -> None:
         super().__init__(**kwargs)
-        self.dram_port_coordinates = wafer_scale_engine.get_dram_port_coordinate_list()
+        self.dram_port_coordinates = [node for node, ndata in wafer_scale_engine.nodes(data=True) if ndata['dram_port']]
         self.hash_func = hashlib.sha256()
 
     def __call__(self, virtual_dram_port_id: int):

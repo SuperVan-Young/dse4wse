@@ -4,16 +4,14 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from base import BaseReticleRouter
+from typing import List, Tuple
+Coordinate = Tuple[int, int]
 
 class XYReticleRouter(BaseReticleRouter):
-    def __init__(self, 
-                 dram_stacking_type: str,
-                 **kwargs) -> None:
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.dram_stacking_type = dram_stacking_type
-        assert dram_stacking_type == '2d', "Current impl only support 2d"
 
-    def __call__(self, src, dst, src_type: str, dst_type: str):
+    def __call__(self, src: Coordinate, dst: Coordinate) -> List[Coordinate]:
         path = []
         x1, y1 = src
         x2, y2 = dst
