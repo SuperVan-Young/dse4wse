@@ -9,8 +9,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 import traceback
 
 from dse4wse.model.wse_attn import WseTransformerRunner
+# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
+
+logger.info(f"Transformer type: {WseTransformerRunner}")
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--case', metavar='N', type=int, default=6)
@@ -70,9 +73,11 @@ def find_best_micro_batch_size(**kwargs) -> int:
                 best_training_throughput = throughput
                 best_micro_batch_size = micro_batch_size
         except:
+            # logger.warning(traceback.format_exc())
             continue
     if best_micro_batch_size == -1:
-        logger.warning("Failed to find valid micro batch size")
+        logger.error("Failed to find valid micro batch size")
+        exit(1)
     for handler in logger.handlers:
         handler.setLevel('DEBUG')
 

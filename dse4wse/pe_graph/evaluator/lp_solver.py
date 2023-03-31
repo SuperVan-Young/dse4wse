@@ -145,5 +145,5 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         linprog_result = linprog(**linprog_kwargs)
         min_freq = linprog_result.x[global_freq_index]
 
-        logger.debug(f"linprog result min freq: {min_freq} iter/second")
+        # logger.debug(f"linprog result min freq: {min_freq} iter/second")
         return min_freq

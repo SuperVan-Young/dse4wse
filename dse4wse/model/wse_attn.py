@@ -2,8 +2,11 @@
 from math import ceil
 
 from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
-from dse4wse.op_graph.op import MatMulOperator
+from dse4wse.op_graph.op import BaseOperator, MatMulOperator
 from dse4wse.pe_graph.hardware import WaferScaleEngine
+from dse4wse.pe_graph.task import ListWaferTask, ThreeStageReticleTaskGenerator
+from dse4wse.pe_graph.mapper import get_default_mapper
+from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator
 from dse4wse.utils import TensorInfo, TrainingConfig, logger
 
 BFLOAT16 = 10
@@ -382,8 +385,7 @@ class WseTransformerRunner():
         weight_grad_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         if self.zero_dp_g: weight_grad_tensor_size /= self.data_parallel_size
 
-        weight_optimizer_state_tensor_size = weight_tensor_numel * \
-            (self.training_config.get_static_optimizer_state_size() + self.training_config.get_dynamic_optimizer_state_size())
+        weight_optimizer_state_tensor_size = weight_tensor_numel * self.training_config.get_optimizer_state_size()
         if self.zero_dp_os: weight_optimizer_state_tensor_size /= self.data_parallel_size
 
         # 1 share of micro batch's activation & grad
@@ -437,3 +439,95 @@ class WseTransformerRunner():
         utilization = compute_latency / whole_batch_latency
 
         return utilization
+    
+class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
+    def __init__(self, 
+                 attention_heads: int,
+                 hidden_size: int, 
+                 sequence_length: int, 
+                 number_of_layers: int, 
+                 micro_batch_size: int, 
+                 mini_batch_size: int, 
+                 data_parallel_size: int, 
+                 model_parallel_size: int, 
+                 tensor_parallel_size: int, 
+                 wafer_scale_engine: WaferScaleEngine, 
+                 inter_wafer_bandwidth: int, 
+                 training_config: TrainingConfig, 
+                 zero_dp_os: bool = True, 
+                 zero_dp_g: bool = True, 
+                 zero_dp_p: bool = True, 
+                 zero_r_pa: bool = True
+                 ) -> None:
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, inter_wafer_bandwidth, training_config, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa)
+
+    def __create_three_stage_task_generator_from_operator(self, op: BaseOperator, forward: bool):
+        precision = self.training_config.get_precision_size()
+        input_tensor_size = [tensor.numel() * precision for tensor in op.input_tensors.values()]
+        output_tensor_size = [tensor.numel() * precision for tensor in op.output_tensors.values()]
+        if forward:
+            compute_amount = op.get_fp_mac_count()
+            read_data_amount = input_tensor_size
+            write_data_amount = output_tensor_size
+        else:
+            # TODO: optimizer state move from/to dram, and mac count of that operation
+            # aggregate that part of function to training_configs (new API, and deprecate the old ones)
+            compute_amount = op.get_bp_mac_count()
+            read_data_amount = input_tensor_size + output_tensor_size  # input & output's grad
+            write_data_amount = input_tensor_size  # input's grad
+        kwargs = {
+            'compute_amount': compute_amount,
+            'read_data_amount': read_data_amount,
+            'write_data_amount': write_data_amount,
+            'new_dram_port': True,
+        }
+        return ThreeStageReticleTaskGenerator(**kwargs)
+    
+    def __create_three_stage_task_generator_from_weight_update(self, weight: TensorInfo):
+        precision = self.training_config.get_precision_size()
+        optimizer_state_factor = self.training_config.get_optimizer_state_size()
+        compute_factor = self.training_config.get_weight_update_compute_amount()
+        dram_access_amount = [weight.numel() * (precision + optimizer_state_factor)]
+        compute_amount = weight.numel() * compute_factor
+        kwargs = {
+            'compute_amount': compute_amount,
+            'read_data_amount': dram_access_amount,
+            'write_data_amount': dram_access_amount,
+            'new_dram_port': True,
+        }
+        return ThreeStageReticleTaskGenerator(**kwargs)
+
+    def _get_propagation_latency(self, forward: bool) -> float:
+        """
+        Estimation on propagation latency of single reticle running one pipeline stage
+        Consider all reticles' interaction on the wafer.
+        """
+        total_latency = 0
+        for op_name, op in self._op_graph.nodes(data='operator'):
+            assert op.op_type == 'Matmul'
+            task_generator = self.__create_three_stage_task_generator_from_operator(op, forward)
+            repeated_times = self.data_parallel_size if self.zero_dp_p else 1
+            repeated_times *= self.num_layer_per_pipeline_stage
+            wse_task = ListWaferTask([task_generator(repeated_times=repeated_times) 
+                                      for _ in range(self.tensor_parallel_size * self.num_pipeline_stage_per_wafer)])
+            mapper = get_default_mapper(self.wafer_scale_engine)
+            wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+            op_latency = wse_evaluator.get_total_latency()
+
+            total_latency += op_latency
+        
+        if not forward:
+            # consider updating weights
+            for tensor in self._op_graph.get_tensors(kind=['weight']).values():
+                task_generator = self.__create_three_stage_task_generator_from_weight_update(tensor)
+                repeated_times = self.num_layer_per_pipeline_stage
+                wse_task = ListWaferTask([task_generator(repeated_times=repeated_times)
+                                          for _ in range(self.tensor_parallel_size * self.num_pipeline_stage_per_wafer)])
+                mapper = get_default_mapper(self.wafer_scale_engine)
+                wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+                weight_latency = wse_evaluator.get_total_latency()
+                total_latency += weight_latency
+
+        return total_latency
+    
+    # TODO: add activation comm cost analysis    
