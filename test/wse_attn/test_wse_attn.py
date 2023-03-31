@@ -8,8 +8,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import traceback
 
-from dse4wse.model.wse_attn import WseTransformerRunner
-# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+# from dse4wse.model.wse_attn import WseTransformerRunner
+from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 
@@ -73,7 +73,7 @@ def find_best_micro_batch_size(**kwargs) -> int:
                 best_training_throughput = throughput
                 best_micro_batch_size = micro_batch_size
         except:
-            # logger.warning(traceback.format_exc())
+            logger.warning(traceback.format_exc())
             continue
     if best_micro_batch_size == -1:
         logger.error("Failed to find valid micro batch size")
@@ -135,7 +135,7 @@ def run_testcase(case):
     test_attention_module(**megatron_config)
 
 if __name__ == "__main__":
-    for i in range(10):
+    for i in range(9, 10):
         try:
             run_testcase(i)
         except:

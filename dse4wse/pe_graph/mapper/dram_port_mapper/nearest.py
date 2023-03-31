@@ -40,11 +40,11 @@ class NearestDramPortMapper(BaseDramPortMapper):
         
         def get_nearest_dram_port(coord_list):
             dram_ports = np.array(coord_list)
-            centroid = np.mean(dram_ports, dim=1, keepdims=True)
-            l1_distance = (dram_ports - centroid).abs().sum(dim=1, keepdims=False)
-            nearest_dram_port = self.dram_port_coordinates[np.argimn(l1_distance)]
+            centroid = np.mean(dram_ports, axis=1, keepdims=True)
+            l1_distance = np.sum(np.abs(dram_ports - centroid), axis=1, keepdims=False)
+            nearest_dram_port = self.dram_port_coordinates[np.argmin(l1_distance)]
             return nearest_dram_port
-        mapping_table = {vdpid: get_nearest_dram_port(prcoord) for vdpid, prcoord in vdpid_2_prcoord}
+        mapping_table = {vdpid: get_nearest_dram_port(prcoord) for vdpid, prcoord in vdpid_2_prcoord.items()}
         return mapping_table
 
     def __call__(self, virtual_dram_port_id: int):

@@ -88,7 +88,7 @@ def instantiate_task(**kwargs):
 def test_lp_reticle_evaluator(**kwargs):
     hardware = instantiate_wafer(**kwargs)
     task = instantiate_task(**kwargs)
-    mapper = get_default_mapper(hardware)
+    mapper = get_default_mapper(hardware, task)
 
     wse_evaluator = LpReticleLevelWseEvaluator(
         hardware=hardware,

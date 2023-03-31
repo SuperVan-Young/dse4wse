@@ -246,10 +246,9 @@ class WseTransformerRunner():
         
         return op_graph
     
-    def _get_propagation_latency(self, forward: bool) -> float:
-        """
-        Estimation on propagation latency of single reticle running one pipeline stage
-        This is a naive version where each reticle provides 100% utilization
+    def _get_compute_latency(self, forward: bool) -> float:
+        """ Assume 100% compute resource utilization
+        (propagation might includes memory access latency and interconncetion overhead)
         """
         total_latency = 0
         compute_power = self.wafer_scale_engine.reticle_compute_power
@@ -262,6 +261,13 @@ class WseTransformerRunner():
             total_latency += mac_count / compute_power
 
         return total_latency 
+
+    def _get_propagation_latency(self, forward: bool) -> float:
+        """
+        Estimation on propagation latency of single reticle running one pipeline stage
+        This is a naive version where each reticle provides 100% utilization
+        """
+        return self._get_compute_latency(forward)
     
     def _get_weight_comm_latency(self, forward: bool) -> float:
         """
@@ -434,7 +440,7 @@ class WseTransformerRunner():
         pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
         whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency)
 
-        compute_latency = self._get_propagation_latency(forward=True) * 2 + self._get_propagation_latency(forward=False)
+        compute_latency = self._get_compute_latency(forward=True) * 2 + self._get_compute_latency(forward=False)
         compute_latency *= ceil(self.mini_batch_size / self.micro_batch_size)
         utilization = compute_latency / whole_batch_latency
 
@@ -470,8 +476,6 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             read_data_amount = input_tensor_size
             write_data_amount = output_tensor_size
         else:
-            # TODO: optimizer state move from/to dram, and mac count of that operation
-            # aggregate that part of function to training_configs (new API, and deprecate the old ones)
             compute_amount = op.get_bp_mac_count()
             read_data_amount = input_tensor_size + output_tensor_size  # input & output's grad
             write_data_amount = input_tensor_size  # input's grad
@@ -510,7 +514,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             repeated_times *= self.num_layer_per_pipeline_stage
             wse_task = ListWaferTask([task_generator(repeated_times=repeated_times) 
                                       for _ in range(self.tensor_parallel_size * self.num_pipeline_stage_per_wafer)])
-            mapper = get_default_mapper(self.wafer_scale_engine)
+            mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
             wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
             op_latency = wse_evaluator.get_total_latency()
 
@@ -523,11 +527,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                 repeated_times = self.num_layer_per_pipeline_stage
                 wse_task = ListWaferTask([task_generator(repeated_times=repeated_times)
                                           for _ in range(self.tensor_parallel_size * self.num_pipeline_stage_per_wafer)])
-                mapper = get_default_mapper(self.wafer_scale_engine)
+                mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
                 wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
                 weight_latency = wse_evaluator.get_total_latency()
-                total_latency += weight_latency
+                total_latency += weight_latency  # this is very little amount
 
         return total_latency
     
-    # TODO: add activation comm cost analysis    
+    # TODO: add activation comm cost analysis, such as allreduce output
