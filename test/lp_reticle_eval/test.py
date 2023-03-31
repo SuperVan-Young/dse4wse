@@ -96,6 +96,8 @@ def test_lp_reticle_evaluator(**kwargs):
         mapper=mapper,
     )
     total_latency = wse_evaluator.get_total_latency()
+    logger.info(f"Total latency {total_latency} seconds")
+
     return total_latency
 
 TESTCASE = {

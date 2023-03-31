@@ -28,7 +28,7 @@ class WseTransformerRunner():
                  training_config: TrainingConfig,
                  zero_dp_os: bool = True,
                  zero_dp_g: bool = True,
-                 zero_dp_p: bool = False,
+                 zero_dp_p: bool = True,
                  zero_r_pa: bool = True,
                  ) -> None:
         # model parameters
@@ -52,10 +52,6 @@ class WseTransformerRunner():
         self.zero_dp_g = zero_dp_g
         self.zero_dp_p = zero_dp_p
         self.zero_r_pa = zero_r_pa
-        # implement one setting at first
-        assert zero_dp_os == True
-        assert zero_dp_g == True
-        assert zero_r_pa == True
 
         # wse platform
         self.wafer_scale_engine = wafer_scale_engine
@@ -312,7 +308,7 @@ class WseTransformerRunner():
     
     def get_fp_latency(self):
         inter_wafer_bandwidth = self.inter_wafer_bandwidth
-        inter_reticle_bandwidth = self.inter_reticle_bandwidth
+        inter_reticle_bandwidth = self.wafer_scale_engine.inter_reticle_bandwidth
 
         # fetch activation from previous wafer
         # All pipeline stages wait for this slowest transmission to finish
@@ -336,9 +332,11 @@ class WseTransformerRunner():
         logger.info(f"- Inter-reticle comm      : {int(inter_reticle_latency * 1e9):>15d} ns ({inter_reticle_latency/total_latency:>.2%})")
         logger.info(f"- Inter-wafer comm        : {int(inter_wafer_latency * 1e9):>15d} ns ({inter_wafer_latency/total_latency:>.2%})")
 
+        return total_latency
+
     def get_bp_latency(self):
         inter_wafer_bandwidth = self.inter_wafer_bandwidth
-        inter_reticle_bandwidth = self.inter_reticle_bandwidth
+        inter_reticle_bandwidth = self.wafer_scale_engine.inter_reticle_bandwidth
 
         # fetch activation's grad from successive wafer
         output_tensors = self._op_graph.get_tensors(kind=['output'])
@@ -368,8 +366,9 @@ class WseTransformerRunner():
         logger.info(f"- Inter-reticle comm      : {int(inter_reticle_latency * 1e9):>15d} ns ({inter_reticle_latency/total_latency:>.2%})")
         logger.info(f"- Inter-wafer comm        : {int(inter_wafer_latency * 1e9):>15d} ns ({inter_wafer_latency/total_latency:>.2%})")
 
+        return total_latency
 
-    def check_dram_utilization(self) -> bool:
+    def get_dram_utilization(self) -> bool:
         # static memory
         # weight & grad & optimizer state
         weight_tensors = self._op_graph.get_tensors(kind=['weight'])
@@ -411,3 +410,30 @@ class WseTransformerRunner():
         logger.info(f"Total utilized DRAM     : {int(utilized_memory / 1e9):>15d} GB ({utilized_memory / total_memory:.2%})")
 
         return utilized_memory <= total_memory
+    
+    def get_training_throughput(self) -> float:
+        """ Use GPipe's pipelining technique.
+        """
+        logger.info("Calculating training throughput of attention module")
+
+        single_stage_fp_latency = self.get_fp_latency()
+        single_stage_bp_latency = self.get_bp_latency()
+        pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
+        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency)
+        sequence_per_sec = self.mini_batch_size / whole_batch_latency
+
+        return sequence_per_sec
+
+    def get_training_wse_utilization(self) -> float:
+        logger.info("Calculating training wse utilization of attention module")
+        
+        single_stage_fp_latency = self.get_fp_latency()
+        single_stage_bp_latency = self.get_bp_latency()
+        pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
+        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency)
+
+        compute_latency = self._get_propagation_latency(forward=True) * 2 + self._get_propagation_latency(forward=False)
+        compute_latency *= ceil(self.mini_batch_size / self.micro_batch_size)
+        utilization = compute_latency / whole_batch_latency
+
+        return utilization

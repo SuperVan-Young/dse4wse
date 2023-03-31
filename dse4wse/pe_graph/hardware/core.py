@@ -13,4 +13,4 @@ class Core():
 
     @classmethod
     def get_compute_power(cls, core_config: Dict) -> int:
-        return core_config.get('core_num_mac')
+        return core_config.get('core_compute_power')
