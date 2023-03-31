@@ -469,21 +469,21 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
 
     def __create_three_stage_task_generator_from_operator(self, op: BaseOperator, forward: bool):
         precision = self.training_config.get_precision_size()
-        input_tensor_size = [tensor.numel() * precision for tensor in op.input_tensors.values()]
-        output_tensor_size = [tensor.numel() * precision for tensor in op.output_tensors.values()]
+        input_tensor_size = sum([tensor.numel() * precision for tensor in op.input_tensors.values()])
+        output_tensor_size = sum([tensor.numel() * precision for tensor in op.output_tensors.values()])
         if forward:
             compute_amount = op.get_fp_mac_count()
-            read_data_amount = input_tensor_size
-            write_data_amount = output_tensor_size
+            read_data_amount = [input_tensor_size]
+            write_data_amount = [output_tensor_size]
         else:
             compute_amount = op.get_bp_mac_count()
-            read_data_amount = input_tensor_size + output_tensor_size  # input & output's grad
-            write_data_amount = input_tensor_size  # input's grad
+            read_data_amount = [input_tensor_size + output_tensor_size]  # input & output's grad
+            write_data_amount = [input_tensor_size]  # input's grad
         kwargs = {
             'compute_amount': compute_amount,
             'read_data_amount': read_data_amount,
             'write_data_amount': write_data_amount,
-            'new_dram_port': True,
+            'reuse_dram_port': False,
         }
         return ThreeStageReticleTaskGenerator(**kwargs)
     
@@ -497,7 +497,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'compute_amount': compute_amount,
             'read_data_amount': dram_access_amount,
             'write_data_amount': dram_access_amount,
-            'new_dram_port': True,
+            'reuse_dram_port': False,
         }
         return ThreeStageReticleTaskGenerator(**kwargs)
 

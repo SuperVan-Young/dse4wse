@@ -16,12 +16,12 @@ class ThreeStageReticleTaskGenerator():
                  compute_amount: int,
                  read_data_amount: List[int],
                  write_data_amount: List[int],
-                 new_dram_port: bool = True,
+                 reuse_dram_port: bool = True,
                  ) -> None:
         self.compute_amount = compute_amount
         self.read_data_amount = read_data_amount
         self.write_data_amount = write_data_amount
-        self.new_dram_port = new_dram_port
+        self.reuse_dram_port = reuse_dram_port
 
         self._reticle_counter = 0
         self._dram_port_counter = 0
@@ -30,7 +30,7 @@ class ThreeStageReticleTaskGenerator():
         virtual_reticle_id = self._reticle_counter
         self._reticle_counter += 1
 
-        if self.new_dram_port:
+        if self.reuse_dram_port:
             dram_port_counter = 0
         else:
             dram_port_counter = deepcopy(self._dram_port_counter)
