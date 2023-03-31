@@ -32,6 +32,10 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         G = self.__build_annotated_graph()
         min_freq = self.__lp_solver(G)  # times / second
         repeated_times = max([reticle_task.repeated_times for reticle_task in self.task])  # times
+
+        # debugging
+        self.profile_utilization(G, min_freq)
+
         return repeated_times / min_freq
 
     def __build_annotated_graph(self) -> DiGraph:
@@ -147,3 +151,34 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
 
         # logger.debug(f"linprog result min freq: {min_freq} iter/second")
         return min_freq
+    
+    def profile_utilization(self, G: DiGraph, min_freq: float, group=True):
+        logger.debug("Profiling resource utilization for lp solver")
+
+        for node, ndata in G.nodes(data=True):
+            if ndata['compute_mark']:
+                reticle_compute_power = self.hardware.reticle_compute_power
+                if group:
+                    data_amount = sum(ndata['compute_mark'].values())
+                    logger.debug(f"Reticle coordinate {node}: compute_util={data_amount*min_freq/reticle_compute_power:.2%}")
+                else:
+                    for vrid, data_amount in ndata['compute_mark'].items():
+                        logger.debug(f"Reticle coordinate {node}: vrid={vrid}, compute_util={data_amount*min_freq/reticle_compute_power:.2%}")
+            if ndata['dram_access_mark']:
+                dram_bandwidth = self.hardware.dram_bandwidth
+                if group:
+                    data_amount = sum(ndata['dram_access_mark'].values())
+                    logger.debug(f"Reticle coordinate {node}: dram_bandwidth_util={data_amount*min_freq/dram_bandwidth:.2%}")
+                else:
+                    for vrid, data_amount in ndata['dram_access_mark'].items():
+                        logger.debug(f"Reticle coordinate {node}: vrid={vrid}, dram_bandwidth_util={data_amount*min_freq/dram_bandwidth:.2%}")
+        
+        for u, v, edata in G.edges(data=True):
+            if edata['transmission_mark']:
+                inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
+                if group:
+                    data_amount = sum(edata['transmission_mark'].values())
+                    logger.debug(f"Reticle link {u, v}: link_bandwidth={data_amount*min_freq/inter_reticle_bandwidth:.2%}")
+                else:
+                    for vrid, data_amount in edata['transmission_mark'].items():
+                        logger.debug(f"Reticle link {u, v}: vrid={vrid}, link_bandwidth_util={data_amount*min_freq/inter_reticle_bandwidth:.2%}")
