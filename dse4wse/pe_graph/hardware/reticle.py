@@ -31,5 +31,13 @@ class Reticle():
         reticle_compute_power = core_array_height * core_array_width * core_compute_power
         return reticle_compute_power
     
+    @classmethod
+    def get_sram_size(cls, reticle_config: Dict) -> int:
+        core_array_height = reticle_config['core_array_height']
+        core_array_width = reticle_config['core_array_width']
+        core_sram_size = Core.get_sram_size(reticle_config['core_config'])
+        reticle_sram_size = core_array_height * core_array_width * core_sram_size
+        return reticle_sram_size
+    
     def __build_core_graph(self):
         return None
