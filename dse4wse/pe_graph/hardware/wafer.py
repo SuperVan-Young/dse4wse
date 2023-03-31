@@ -41,11 +41,13 @@ class WaferScaleEngine():
     def __build_reticle_graph(self):
         # build graph skeleton
         H, W = self.reticle_array_height, self.reticle_array_width
-        G = nx.grid_2d_graph(H, W, create_using=nx.DiGraph)
+        G = nx.grid_2d_graph(range(-1, H + 1), range(-1, W + 1), create_using=nx.DiGraph)
         G : nx.DiGraph
         for node, ndata in G.nodes(data=True):
             ndata['reticle'] = None
             ndata['dram_port'] = None
+        for node in [(-1, -1), (-1, W), (H, -1), (H, W)]:
+            G.remove_node(node)
 
         def add_reticle(x, y, reticle: Reticle):
             G.nodes[(x, y)]['reticle'] = reticle
@@ -61,11 +63,11 @@ class WaferScaleEngine():
         # dram ports
         if self.dram_stacking_type == '2d':
             for x in range(0, self.reticle_array_height):
-                add_dram_port(x, 0, DramPort())
-                add_dram_port(x, self.reticle_array_width - 1, DramPort())
+                add_dram_port(x, -1, DramPort())
+                add_dram_port(x, self.reticle_array_width, DramPort())
             for y in range(0, self.reticle_array_width):
-                add_dram_port(0, y, DramPort())
-                add_dram_port(self.reticle_array_height - 1, y, DramPort())
+                add_dram_port(-1, y, DramPort())
+                add_dram_port(self.reticle_array_height, y, DramPort())
         elif self.dram_stacking_type == '3d':
             for x, y in product(range(self.reticle_array_height), range(self.reticle_array_width)):
                 add_dram_port(x, y, DramPort())

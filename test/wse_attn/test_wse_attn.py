@@ -20,6 +20,7 @@ parser.add_argument('--case', metavar='N', type=int, default=6)
 
 def create_a100_like_wse(**kwargs):
     T = kwargs.get('tensor_parallel_size')
+    P = 8  # pipeline stage on one wafer
 
     # instantiate wafer scale engine
     core_config = {
@@ -33,11 +34,11 @@ def create_a100_like_wse(**kwargs):
     }
     wse_config = {   # 1 node
         'reticle_array_height': T,
-        'reticle_array_width': 1,
+        'reticle_array_width': P,
         'inter_reticle_bandwidth': 600e9,
-        'dram_size': T * 80e9,
+        'dram_size': T * P * 80e9,
         'dram_bandwidth': 1.94e12,
-        'dram_stacking_type': '3d',
+        'dram_stacking_type': '2d',
         'reticle_config': reticle_config,
     }
     wafer_scale_engine = WaferScaleEngine(**wse_config)
