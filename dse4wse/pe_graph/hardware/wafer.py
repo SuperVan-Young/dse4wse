@@ -16,6 +16,7 @@ class WaferScaleEngine():
                  reticle_array_height: int,
                  reticle_array_width: int,
                  inter_reticle_bandwidth: int,
+                 dram_size: int,
                  dram_bandwidth: int,
                  dram_stacking_type: str,
                  reticle_config: Dict,
@@ -25,6 +26,7 @@ class WaferScaleEngine():
         self.reticle_array_height = reticle_array_height
         self.reticle_array_width = reticle_array_width
         self.inter_reticle_bandwidth = inter_reticle_bandwidth
+        self.dram_size = dram_size
         self.dram_bandwidth = dram_bandwidth
         self.dram_stacking_type = dram_stacking_type
         self.reticle_config = reticle_config

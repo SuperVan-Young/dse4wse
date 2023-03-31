@@ -16,6 +16,9 @@ class TrainingConfig():
         self.activation_checkpoint = activation_checkpoint
         #FIXME:  adjust precision when building the graph
 
+    def get_precision_size(self) -> int:
+        return onnx_dtype_2_storage_size(self.precision)
+
     def get_dynamic_optimizer_state_size(self) -> int:
         """Updating one weight on SRAM requires this amount of temporary buffer.
         """

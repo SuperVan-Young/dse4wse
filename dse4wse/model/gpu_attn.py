@@ -1,20 +1,14 @@
 
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 from itertools import chain
 
-from graph import OpGraph, build_op_graph_from_operator_list
-from op import MatMulOperator, BaseOperator
-from utils import TensorInfo, TrainingConfig, GpuArchConfig, logger
+from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
+from dse4wse.op_graph.op import MatMulOperator, BaseOperator
+from dse4wse.utils import TensorInfo, TrainingConfig, GpuArchConfig, logger
 from math import ceil
 
 BFLOAT16 = 10
         
-class AttentionModule():
+class GpuAttentionModule():
     """We estimate attention module on GpuArchConfig
     
     From the same aspect, WSE provides these improvements than traditional GPU architecture:
