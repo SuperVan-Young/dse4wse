@@ -195,14 +195,14 @@ class WseTransformerRunner():
             kind='output',
             inplace=False,
         )
-        W1_mlp = TensorInfo(
+        W0_mlp = TensorInfo(
             name='W0_mlp',
             shape=(H, 4 * H_),
             onnx_dtype=BFLOAT16,
             kind='weight',
             inplace=True,
         )
-        W2_mlp = TensorInfo(
+        W1_mlp = TensorInfo(
             name='W1_mlp',
             shape=(4 * H_, H),
             onnx_dtype=BFLOAT16,
@@ -237,13 +237,13 @@ class WseTransformerRunner():
         linear_wlp0 = MatMulOperator(
             name='linear_mlp0',
             op_type='Matmul',
-            input_tensors={'A': X0_mlp, 'B': W1_mlp},
+            input_tensors={'A': X0_mlp, 'B': W0_mlp},
             output_tensors={'Y': X1_mlp},
         )
         linear_wlp1 = MatMulOperator(
             name='linear_mlp1',
             op_type='Matmul',
-            input_tensors={'A': X1_mlp, 'B': W2_mlp},
+            input_tensors={'A': X1_mlp, 'B': W1_mlp},
             output_tensors={'Y': X2_mlp},
         )
 
@@ -649,6 +649,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         assert 'N' not in dim_types['A']
         assert 'M' in dim_types['Y']
         assert 'N' in dim_types['Y']
+        assert 'M' in dim_types['A']
+        assert 'N' in dim_types['B']
+        for name in shapes:
+            assert len(shapes[name]) == len(dim_types[name])
+
         M_value, N_value = None, None
         for dim_value, dim_type in zip(shapes['Y'], dim_types['Y']):
             if dim_type == 'M': M_value = dim_value
@@ -693,7 +698,10 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
         return wse_evaluator.get_total_latency()
 
-    def __get_forward_propatation_latency(self) -> float:
+    def __get_forward_propatation_latency(self, store_all_activation=False) -> float:
+        """
+        Store all activation in rematerialization state
+        """
         tensors = self._op_graph.get_tensors()
         precision = self.training_config.get_precision_size()
         self_attention_repeats = {}
@@ -719,7 +727,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         # Proj
         self_attention_repeats['W_proj'], self_attention_repeats['Y'] = self.__get_linear_best_blocking(
             shapes={
-                'A': tensors['Y'].shape,
+                'A': tensors['Y_reshape'].shape,
                 'B': tensors['W_proj'].shape,
                 'Y': tensors['Z'].shape,
             },
@@ -731,25 +739,25 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         )
 
         self_attention_read_data_amount = sum([tensors[name].numel() * repeat for name, repeat in self_attention_repeats.items()]) * precision
-        self_attention_write_data_amount = sum([tensors[name].numel() for name in ('Y', 'Z')]) * precision
+        self_attention_write_tensor_names = ['Y', 'Z'] if not store_all_activation else ['QKV', 'scores', 'Y', 'Z']
+        self_attention_write_data_amount = sum([tensors[name].numel() for name in self_attention_write_tensor_names]) * precision
         self_attention_compute_amount = sum([op.get_fp_mac_count() for node, op in self._op_graph.nodes(data='operator') 
                                             if node in ('linear_qkv', 'matmul_qk', 'matmul_scorev', 'linear_proj')])
-        self_attention_task_generator = ThreeStageReticleTaskGenerator({
+        self_attention_task_generator = ThreeStageReticleTaskGenerator(**{
             'compute_amount': self_attention_compute_amount,
-            'read_data_amount': self_attention_read_data_amount,
-            'write_data_amount': self_attention_write_data_amount,
+            'read_data_amount': [self_attention_read_data_amount],
+            'write_data_amount': [self_attention_write_data_amount],
             'reuse_dram_port': False,
         })
         self_attention_wse_task = ListWaferTask([self_attention_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         self_attention_latency = self.__run_wse_task(self_attention_wse_task)
 
         mlp_repeats = {}
-        # MLP 1
-        mlp_repeats['W1_mlp'], mlp_repeats['X0_mlp'] = self.__get_linear_best_blocking(
-            
+        # MLP 0
+        mlp_repeats['W0_mlp'], mlp_repeats['X0_mlp'] = self.__get_linear_best_blocking(
             shapes={
                 'A': tensors['X0_mlp'].shape,
-                'B': tensors['W1_mlp'].shape,
+                'B': tensors['W0_mlp'].shape,
                 'Y': tensors['X1_mlp'].shape,
             },
             dim_types={
@@ -759,12 +767,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             },
         )
 
-        # MLP 2
-        mlp_repeats['W2_mlp'], mlp_repeats['X1_mlp'] = self.__get_linear_best_blocking(
-            
+        # MLP 1
+        mlp_repeats['W1_mlp'], mlp_repeats['X1_mlp'] = self.__get_linear_best_blocking(
             shapes={
                 'A': tensors['X1_mlp'].shape,
-                'B': tensors['W2_mlp'].shape,
+                'B': tensors['W1_mlp'].shape,
                 'Y': tensors['X2_mlp'].shape,
             },
             dim_types={
@@ -774,13 +781,13 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             },
         )
         mlp_read_data_amount = sum([tensors[name].numel() * repeat for name, repeat in mlp_repeats.items()]) * precision
-        mlp_write_data_amount = sum([tensors[name].numel() for name in ('Y', 'Z')]) * precision
+        mlp_write_data_amount = sum([tensors[name].numel() for name in ('X1_mlp', 'X2_mlp')]) * precision
         mlp_compute_amount = sum([op.get_fp_mac_count() for node, op in self._op_graph.nodes(data='operator') 
-                                            if node in ('linear_mlp1', 'linear_mlp2')])
-        mlp_task_generator = ThreeStageReticleTaskGenerator({
+                                            if node in ('linear_mlp0', 'linear_mlp1')])
+        mlp_task_generator = ThreeStageReticleTaskGenerator(**{
             'compute_amount': mlp_compute_amount,
-            'read_data_amount': mlp_read_data_amount,
-            'write_data_amount': mlp_write_data_amount,
+            'read_data_amount': [mlp_read_data_amount],
+            'write_data_amount': [mlp_write_data_amount],
             'reuse_dram_port': False,
         })
         mlp_wse_task = ListWaferTask([mlp_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
@@ -790,6 +797,202 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         total_latency *= self.num_layer_per_pipeline_stage
 
         return total_latency
+    
+    def __get_backward_propagation_latency(self) -> float:
+        tensors = self._op_graph.get_tensors()
+        precision = self.training_config.get_precision_size()
+
+        mlp_repeats = {
+            'W1_mlp': 0,
+            'W0_mlp': 0,
+            'X2_mlp': 0,
+            'X1_mlp': 0,
+            'X0_mlp': 0,
+        }  # calculate input grad
+        # MLP 2
+        split_X1_mlp = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['X2_mlp'].shape,
+                'B': tensors['W1_mlp'].shape,
+                'Y': tensors['X1_mlp'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('N', 'K'),
+                'Y': ('M', '-', 'N'),
+            },
+        )
+        mlp_repeats['W1_mlp'] += split_X1_mlp[0]
+        mlp_repeats['X2_mlp'] += split_X1_mlp[1]
+
+        split_W2_mlp = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['X1_mlp'].shape,
+                'B': tensors['X2_mlp'].shape,
+                'Y': tensors['W1_mlp'].shape,
+            },
+            dim_types={
+                'A': ('K', 'K', 'M'),
+                'B': ('K', 'K', 'N'),
+                'Y': ('M', 'N'),
+            },
+        )
+        mlp_repeats['X2_mlp'] += split_W2_mlp[0]
+        mlp_repeats['X1_mlp'] += split_W2_mlp[1]
+
+        # MLP 1
+        split_X0_mlp = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['X1_mlp'].shape,
+                'B': tensors['W0_mlp'].shape,
+                'Y': tensors['X0_mlp'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('N', 'K'),
+                'Y': ('M', '-', 'N'),
+            },
+        )
+        mlp_repeats['W0_mlp'] += split_X0_mlp[0]
+        mlp_repeats['X1_mlp'] += split_X0_mlp[1]
+
+        split_W1_mlp = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['X0_mlp'].shape,
+                'B': tensors['X1_mlp'].shape,
+                'Y': tensors['W0_mlp'].shape,
+            },
+            dim_types={
+                'A': ('K', 'K', 'M'),
+                'B': ('K', 'K', 'N'),
+                'Y': ('M', 'N'),
+            },
+        )
+        mlp_repeats['X1_mlp'] += split_W1_mlp[0]
+        mlp_repeats['X0_mlp'] += split_W1_mlp[1]
+
+        mlp_read_data_amount = sum([tensors[name].numel() * repeat for name, repeat in mlp_repeats.items()]) * precision
+        mlp_write_data_amount = sum([tensors[name].numel() for name in ('X1_mlp', 'X0_mlp', 'W1_mlp', 'W0_mlp')]) * precision
+        mlp_compute_amount = sum([op.get_bp_mac_count() for node, op in self._op_graph.nodes(data='operator') 
+                                            if node in ('linear_mlp0', 'linear_mlp1')])
+        mlp_task_generator = ThreeStageReticleTaskGenerator(**{
+            'compute_amount': mlp_compute_amount,
+            'read_data_amount': [mlp_read_data_amount],
+            'write_data_amount': [mlp_write_data_amount],
+            'reuse_dram_port': False,
+        })
+        mlp_wse_task = ListWaferTask([mlp_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
+        mlp_latency = self.__run_wse_task(mlp_wse_task)
+
+        self_attention_repeats = {
+            'Z': 0,
+            'W_proj': 0,
+            'Y_reshape': 0,
+            'Y': 1,  # fetch 1 Y's grad
+            'V': 1,  # fetch 1 score and calc 1 V's grad, store
+            'scores': 1,  # fetch 1 V and calc 1 score's grad, needless to store
+            'Q': 1,  # fetch 1 K and calc 1 Q's grad
+            'K': 1,  # fetch 1 Q and calc 1 K's grad
+            'QKV': 0,  # and QKV's grad is written once! It can then be fetched multiple times
+            'W_qkv': 0,
+            'X': 0,
+        }
+        # Z = W_proj(Y)
+        split_Y_reshape = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['Z'].shape,
+                'B': tensors['W_proj'].shape,
+                'Y': tensors['Y_reshape'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('N', 'K'),
+                'Y': ('M', '-', 'N'),
+            },
+        )
+        self_attention_repeats['W_proj'] += split_Y_reshape[0]
+        self_attention_repeats['Z'] += split_Y_reshape[1]
+
+        split_W_proj = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['Y_reshape'].shape,
+                'B': tensors['Z'].shape,
+                'Y': tensors['W_proj'].shape,
+            },
+            dim_types={
+                'A': ('K', 'K', 'M'),
+                'B': ('K', 'K', 'N'),
+                'Y': ('M', 'N'),
+            },
+        )
+        self_attention_repeats['Z'] += split_W_proj[0]
+        self_attention_repeats['Y_reshape'] += split_W_proj[1]
+
+        # QKV = W_qkv(X)
+        split_X = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['QKV'].shape,
+                'B': tensors['W_qkv'].shape,
+                'Y': tensors['X'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('N', 'K'),
+                'Y': ('M', '-', 'N'),
+            },
+        )
+        self_attention_repeats['W_qkv'] += split_X[0]
+        self_attention_repeats['QKV'] += split_X[1]
+
+
+        split_W_qkv = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['X'].shape,
+                'B': tensors['QKV'].shape,
+                'Y': tensors['W_qkv'].shape,
+            },
+            dim_types={
+                'A': ('K', 'K', 'M'),
+                'B': ('K', 'K', 'N'),
+                'Y': ('M', 'N'),
+            },
+        )
+        self_attention_repeats['QKV'] += split_W_qkv[0]
+        self_attention_repeats['X'] += split_W_qkv[1]
+
+        self_attention_read_data_amount = sum([tensors[name].numel() * repeat for name, repeat in self_attention_repeats.items()]) * precision
+        self_attention_write_data_amount = sum([tensors[name].numel() for name in ('W_proj', 'Y_reshape', 'QKV', 'W_qkv', 'X')]) * precision
+        self_attention_compute_amount = sum([op.get_bp_mac_count() for node, op in self._op_graph.nodes(data='operator') 
+                                            if node in ('linear_qkv', 'matmul_qk', 'matmul_scorev', 'linear_proj')])
+        self_attention_task_generator = ThreeStageReticleTaskGenerator(**{
+            'compute_amount': self_attention_compute_amount,
+            'read_data_amount': [self_attention_read_data_amount],
+            'write_data_amount': [self_attention_write_data_amount],
+            'reuse_dram_port': False,
+        })
+        self_attention_wse_task = ListWaferTask([self_attention_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
+        self_attention_latency = self.__run_wse_task(self_attention_wse_task)
+
+        rematerialization_latency = self.__get_forward_propatation_latency(store_all_activation=True)
+
+        weight_total_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.kind == 'weight'])
+        optimizer_state_factor = self.training_config.get_optimizer_state_size()
+        weight_update_compute_factor = self.training_config.get_weight_update_compute_amount()
+        weight_update_dram_access_amount = weight_total_numel * (precision + optimizer_state_factor)
+        weight_update_compute_amount = weight_total_numel * weight_update_compute_factor
+        weight_update_task_generator = ThreeStageReticleTaskGenerator(**{
+            'compute_amount': weight_update_compute_amount,
+            'read_data_amount': [weight_update_dram_access_amount],
+            'write_data_amount': [weight_update_dram_access_amount],
+            'reuse_dram_port': False,
+        })
+        weight_update_wse_task = ListWaferTask([weight_update_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
+        weight_update_latency = self.__run_wse_task(weight_update_wse_task)
+
+        total_latency = mlp_latency + self_attention_latency + rematerialization_latency + weight_update_latency
+        return total_latency
 
     def _get_propagation_latency(self, forward: bool) -> float:
        return self.__get_forward_propatation_latency() if forward else self.__get_backward_propagation_latency()
+    
+    # TODO: collective cost analysis
