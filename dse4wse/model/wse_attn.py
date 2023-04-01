@@ -630,7 +630,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         }
         return ThreeStageReticleTaskGenerator(**kwargs)
 
-    def __get_self_attention_best_blocking(self) -> Tuple[int, int]:
+    def __get_self_attention_fp_best_blocking(self) -> Tuple[int, int]:
         """ Given limited SRAM, we want to know the best blocking strategy that incurs minimum DRAM access overhead.
         For simplicity, we assume output stationary dataflow, and split input on batchsize and split weight on head.
         It is rather difficult to simultaneously consider X -> Y -> Z, since this prohibits Y from reuse,
@@ -649,10 +649,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         best_split = (B, head)
         best_dram_access_amount = get_tensor_size('X') * head + get_tensor_size('W_qkv') * B  # output stationary, only write once
         for B_, head_ in candidate_blocking_size:
-            # X and W can be further unrolled on reduction dim, and their buffer is thus ignored
+            X_buffer = B_ * S * 1
+            W_buffer = 1 * head_ * h
             QKVY_size = 4 * B_ * head_ * S * h * precision
             score_size = B_ * head_ * S * S * precision
-            sram_utilization = QKVY_size + score_size
+            sram_utilization = QKVY_size + score_size + X_buffer + W_buffer
             if sram_utilization <= reticle_sram_size:
                 dram_access_amount = get_tensor_size('X') * (head // head_) + get_tensor_size('W_qkv') * (B // B_)
                 if dram_access_amount < best_dram_access_amount:
@@ -661,36 +662,109 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
 
         return best_split
     
-    def __get_linear_best_blocking(self, x: str, w: str) -> Tuple[int, int]:
-        """ Similar to the above function
+
+    
+    def __get_linear_best_blocking(self, 
+                                   shapes: Dict[str, Tuple],
+                                   dim_types: Dict[str, Tuple],
+                                   M_upper_bound = None,
+                                   N_upper_bound = None,
+                                   ) -> Tuple[int, int]:
+        """ Find best blocking strategy for linear operators with output stationary dataflow.
+        
+        Args:
+            - shapes: shapes of A, B and Y, or other intermeidate tensors
+            - dim_types: M, N for splitting, K for reduction, - for placeholder
         Returns:
-            #split_input_size: read weight for this repetition
-            #split_weight_size: read input for this repetition
+            #split_M, #split_N, #best_dram_access_amount
         """
-        tensors = self._op_graph.get_tensors()
-        input_tensor, weight_tensor = tensors[x], tensors[w]
-        assert input_tensor.kind in ['input', 'activation', 'output']
-        assert weight_tensor.kind in ['weight']
+        assert 'M' not in dim_types['B']
+        assert 'N' not in dim_types['A']
+        assert 'M' in dim_types['Y']
+        assert 'N' in dim_types['Y']
+        M_value, N_value = None, None
+        for dim_value, dim_type in zip(shapes['Y'], dim_types['Y']):
+            if dim_type == 'M': M_value = dim_value
+            if dim_type == 'N': N_value = dim_value
         precision = self.training_config.get_precision_size()
-        get_tensor_size = lambda s: tensors[s].numel() * precision
         reticle_sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config)
+        
+        def get_tensor_size(name):
+            return reduce(lambda x, y: x * y, shapes[name]) * precision
+        A_size, B_size, Y_size = get_tensor_size('A'), get_tensor_size('B'), get_tensor_size('Y')
 
-        B, S, _ = input_tensor
-        H_out = weight_tensor.shape[1]
-        candidate_blocking_size = product(factoring(B), factoring(H_out))
-        best_split = (B, H_out)
-        best_dram_access_amount = get_tensor_size(x) * H_out + get_tensor_size(w) * B
-        for B_, H_out_ in candidate_blocking_size:
-            # X and W can be further unrolled on reduction dim, and their buffer is thus ignored
-            Y_size = B_ * S * H_out_
-            sram_utilization = Y_size
-            if sram_utilization <= reticle_sram_size:
-                dram_access_amount = get_tensor_size(x) * (H_out // H_out_) + get_tensor_size(w) * (B // B_)
+        best_split = (M_value, N_value)
+        best_dram_access_amount = A_size * N_value + B_size * M_value + Y_size
+
+        def get_buffer_size(name, split_M, split_N):
+            def get_dim_buffer_size(dim_value, dim_type):
+                table = {
+                    'M': dim_value // split_M,
+                    'N': dim_value // split_N,
+                    'K': 1,
+                }
+                return table.get(dim_type, dim_value)
+            buffer_size = reduce(lambda x, y: x * y,
+                                 [get_dim_buffer_size(dim_value, dim_type) 
+                                  for dim_value, dim_type in zip(shapes[name], dim_types[name])])
+            buffer_size *= precision
+            return buffer_size
+        
+        for split_M, split_N in zip(factoring(M_value, M_upper_bound), factoring(N_value, N_upper_bound)):
+            total_buffer_size = reduce(lambda x, y: x + y, 
+                                       [get_buffer_size(name, split_M, split_N)
+                                        for name in shapes])
+            if total_buffer_size <= reticle_sram_size:
+                dram_access_amount = A_size * split_N + B_size * split_M + Y_size
                 if dram_access_amount < best_dram_access_amount:
-                    best_split = (B // B_, H_out // H_out_)
+                    best_split = (split_M, split_N)
                     best_dram_access_amount = dram_access_amount
-
         return best_split
+    
+    def __run_wse_task(self, wse_task: ListWaferTask) -> float:
+        mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
+        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+        return wse_evaluator.get_total_latency()
+
+    def __get_forward_propatation_latency(self) -> float:
+        tensors = self._op_graph.get_tensors()
+        precision = self.training_config.get_precision_size()
+
+        # self attention
+        repeat_W_qkv, repeat_X = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['X'].shape,
+                'B': tensors['W_qkv'].shape,
+                'Y': tensors['Y'].shape,
+                'QKV': tensors['QKV'].shape,
+                'scores': tensors['scores'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('K', 'N'),
+                'Y': ('M', 'N', '-', '-'),
+                'QKV': ('M', '-', 'N'),
+                'scores': ('M', 'N', '-', '-'),
+            },
+            N_upper_bound=self.attention_heads//self.tensor_parallel_size,
+        )
+        # Proj
+        repeat_W_proj, repeat_Y = self.__get_linear_best_blocking(
+            shapes={
+                'A': tensors['Y'].shape,
+                'B': tensors['W_proj'].shape,
+                'Y': tensors['Z'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('K', 'N'),
+                'Y': ('M', 'N', '-'),
+            },
+        )
+
+        input_data_amount = 
+
+                                   
     
     def _get_propagation_latency(self, forward: bool) -> float:
         """
