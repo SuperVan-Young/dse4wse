@@ -1,7 +1,7 @@
 
 from math import ceil
 
-from typing import Dict
+from typing import Dict, Tuple
 from itertools import product
 from functools import reduce
 import networkx as nx
@@ -485,6 +485,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         self.parallel_index_2_virtual_reticle_id = {(t, m): i for i, (t, m) in enumerate(product(range(tensor_parallel_size), range(self.num_pipeline_stage_per_wafer)))}
 
     def __create_propagation_reticle_task(self, virtual_reticle_id: int, forward: bool) -> FusedReticleTask:
+        logger.warning(f"Method {__name__} is deprecated in the future")
         tensor_parallel_id, model_parallel_id = self.virtual_reticle_id_2_parallel_index[virtual_reticle_id]
 
         task_graph = nx.DiGraph()  # for simplicity, there's no edge
@@ -568,6 +569,8 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         return fused_task
 
     def __create_weight_update_reticle_task(self, virtual_reticle_id: int) -> FusedReticleTask:
+        logger.warning(f"Method {__name__} is deprecated in the future")
+
         task_graph = nx.DiGraph()  # for simplicity, there's no edge
         def add_subtask(name: str, subtask: BaseReticleTask):
             task_graph.add_node(name, task=subtask)
@@ -591,7 +594,6 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         add_subtask('compute', compute_subtask)
         fused_task = FusedReticleTask(virtual_reticle_id, task_graph, repeated_times=self.micro_batch_size)
         return fused_task
-
 
     def __create_three_stage_task_generator_from_matmul_operator(self, op: MatMulOperator, forward: bool):
         # Deprecated 
@@ -628,6 +630,68 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         }
         return ThreeStageReticleTaskGenerator(**kwargs)
 
+    def __get_self_attention_best_blocking(self) -> Tuple[int, int]:
+        """ Given limited SRAM, we want to know the best blocking strategy that incurs minimum DRAM access overhead.
+        For simplicity, we assume output stationary dataflow, and split input on batchsize and split weight on head.
+        It is rather difficult to simultaneously consider X -> Y -> Z, since this prohibits Y from reuse,
+        and might require a LOT of SRAM to hold the result.
+        Returns:
+            #split_batch_size: read W_qkv for this repetition
+            #split_head_size:  read X for this repetition
+        """
+        tensors = self._op_graph.get_tensors()
+        B, head, S, h = tensors['Y'].shape
+        precision = self.training_config.get_precision_size()
+        get_tensor_size = lambda s: tensors[s].numel() * precision
+        reticle_sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config)
+
+        candidate_blocking_size = product(factoring(B), factoring(head))  # TODO: B and head is small and can brute force search
+        best_split = (B, head)
+        best_dram_access_amount = get_tensor_size('X') * head + get_tensor_size('W_qkv') * B  # output stationary, only write once
+        for B_, head_ in candidate_blocking_size:
+            # X and W can be further unrolled on reduction dim, and their buffer is thus ignored
+            QKVY_size = 4 * B_ * head_ * S * h * precision
+            score_size = B_ * head_ * S * S * precision
+            sram_utilization = QKVY_size + score_size
+            if sram_utilization <= reticle_sram_size:
+                dram_access_amount = get_tensor_size('X') * (head // head_) + get_tensor_size('W_qkv') * (B // B_)
+                if dram_access_amount < best_dram_access_amount:
+                    best_split = (B // B_, head // head_)
+                    best_dram_access_amount = dram_access_amount
+
+        return best_split
+    
+    def __get_linear_best_blocking(self, x: str, w: str) -> Tuple[int, int]:
+        """ Similar to the above function
+        Returns:
+            #split_input_size: read weight for this repetition
+            #split_weight_size: read input for this repetition
+        """
+        tensors = self._op_graph.get_tensors()
+        input_tensor, weight_tensor = tensors[x], tensors[w]
+        assert input_tensor.kind in ['input', 'activation', 'output']
+        assert weight_tensor.kind in ['weight']
+        precision = self.training_config.get_precision_size()
+        get_tensor_size = lambda s: tensors[s].numel() * precision
+        reticle_sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config)
+
+        B, S, _ = input_tensor
+        H_out = weight_tensor.shape[1]
+        candidate_blocking_size = product(factoring(B), factoring(H_out))
+        best_split = (B, H_out)
+        best_dram_access_amount = get_tensor_size(x) * H_out + get_tensor_size(w) * B
+        for B_, H_out_ in candidate_blocking_size:
+            # X and W can be further unrolled on reduction dim, and their buffer is thus ignored
+            Y_size = B_ * S * H_out_
+            sram_utilization = Y_size
+            if sram_utilization <= reticle_sram_size:
+                dram_access_amount = get_tensor_size(x) * (H_out // H_out_) + get_tensor_size(w) * (B // B_)
+                if dram_access_amount < best_dram_access_amount:
+                    best_split = (B // B_, H_out // H_out_)
+                    best_dram_access_amount = dram_access_amount
+
+        return best_split
+    
     def _get_propagation_latency(self, forward: bool) -> float:
         """
         Estimation on propagation latency of single reticle running one pipeline stage
