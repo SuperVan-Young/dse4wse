@@ -138,10 +138,10 @@ def run_testcase(case):
 
 if __name__ == "__main__":
     run_testcase(9)
-    for i in range(9, 10):
-        try:
-            run_testcase(i)
-        except:
-            logger.warning(f"Failure in experiment {i}")
-            logger.error(traceback.format_exc())
-            exit(1)
+    # for i in range(9, 10):
+    #     try:
+    #         run_testcase(i)
+    #     except:
+    #         logger.warning(f"Failure in experiment {i}")
+    #         logger.error(traceback.format_exc())
+    #         exit(1)

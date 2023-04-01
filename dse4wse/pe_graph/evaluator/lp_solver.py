@@ -152,33 +152,56 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # logger.debug(f"linprog result min freq: {min_freq} iter/second")
         return min_freq
     
-    def profile_utilization(self, G: DiGraph, min_freq: float, group=True):
+    def profile_utilization(self, G: DiGraph, min_freq: float, group=True, perlink=False, pertask=False):
         logger.debug("Profiling resource utilization for lp solver")
+        group_compute_utils = []
+        group_dram_bandwidth_utils = []
+        group_inter_reticle_bandwidth_utils = []
 
         for node, ndata in G.nodes(data=True):
             if ndata['compute_mark']:
                 reticle_compute_power = self.hardware.reticle_compute_power
-                if group:
-                    data_amount = sum(ndata['compute_mark'].values())
-                    logger.debug(f"Reticle coordinate {node}: compute_util={data_amount*min_freq/reticle_compute_power:.2%}")
-                else:
+                total_data_amount = sum(ndata['compute_mark'].values())
+                total_util = total_data_amount*min_freq/reticle_compute_power
+                group_compute_utils.append(total_util)
+                if perlink:
+                    logger.debug(f"Reticle coordinate {node}: compute_util={total_util:.2%}")
+                if pertask:
                     for vrid, data_amount in ndata['compute_mark'].items():
                         logger.debug(f"Reticle coordinate {node}: vrid={vrid}, compute_util={data_amount*min_freq/reticle_compute_power:.2%}")
+            else:
+                group_compute_utils.append(0)
             if ndata['dram_access_mark']:
                 dram_bandwidth = self.hardware.dram_bandwidth
-                if group:
-                    data_amount = sum(ndata['dram_access_mark'].values())
-                    logger.debug(f"Reticle coordinate {node}: dram_bandwidth_util={data_amount*min_freq/dram_bandwidth:.2%}")
-                else:
+                total_data_amount = sum(ndata['dram_access_mark'].values())
+                total_util = total_data_amount*min_freq/dram_bandwidth
+                group_dram_bandwidth_utils.append(total_util)
+                if perlink:
+                    logger.debug(f"Reticle coordinate {node}: dram_bandwidth_util={total_util:.2%}")
+                if pertask:
                     for vrid, data_amount in ndata['dram_access_mark'].items():
                         logger.debug(f"Reticle coordinate {node}: vrid={vrid}, dram_bandwidth_util={data_amount*min_freq/dram_bandwidth:.2%}")
-        
+            else:
+                group_dram_bandwidth_utils.append(0)
+
         for u, v, edata in G.edges(data=True):
             if edata['transmission_mark']:
                 inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
-                if group:
-                    data_amount = sum(edata['transmission_mark'].values())
-                    logger.debug(f"Reticle link {u, v}: link_bandwidth={data_amount*min_freq/inter_reticle_bandwidth:.2%}")
-                else:
+                total_data_amount = sum(edata['transmission_mark'].values())
+                total_util = total_data_amount*min_freq/inter_reticle_bandwidth
+                group_inter_reticle_bandwidth_utils.append(total_util)
+                if perlink:
+                    logger.debug(f"Reticle link {u, v}: link_bandwidth={total_util:.2%}")
+                if pertask:
                     for vrid, data_amount in edata['transmission_mark'].items():
                         logger.debug(f"Reticle link {u, v}: vrid={vrid}, link_bandwidth_util={data_amount*min_freq/inter_reticle_bandwidth:.2%}")
+            else:
+                group_inter_reticle_bandwidth_utils.append(0)
+
+        if group:
+            logger.debug(f"Average compute util: {np.mean(group_compute_utils).item():.2%}")
+            logger.debug(f"Maximum compute util: {np.max(group_compute_utils).item():.2%}")
+            logger.debug(f"Average inter reticle bandwidth util: {np.mean(group_inter_reticle_bandwidth_utils).item():.2%}")
+            logger.debug(f"Maximum inter reticle bandwidth util: {np.max(group_inter_reticle_bandwidth_utils).item():.2%}")
+            logger.debug(f"Average DRAM bandwidth util: {np.mean(group_dram_bandwidth_utils).item():.2%}")
+            logger.debug(f"Maximum DRAM bandwidth util: {np.max(group_dram_bandwidth_utils).item():.2%}")
