@@ -1,13 +1,26 @@
 
 from math import ceil
 
+from typing import Dict
+from itertools import product
+from functools import reduce
+import networkx as nx
+
 from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
 from dse4wse.op_graph.op import BaseOperator, MatMulOperator
-from dse4wse.pe_graph.hardware import WaferScaleEngine
-from dse4wse.pe_graph.task import ListWaferTask, ThreeStageReticleTaskGenerator
+from dse4wse.pe_graph.hardware import WaferScaleEngine, Reticle
+from dse4wse.pe_graph.task import (
+    ListWaferTask, 
+    ThreeStageReticleTaskGenerator,
+    FusedReticleTask,
+    ComputeReticleTask,
+    DramAccessReticleTask,
+    PeerAccessReticleTask,
+    BaseReticleTask,
+)
 from dse4wse.pe_graph.mapper import get_default_mapper
 from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator
-from dse4wse.utils import TensorInfo, TrainingConfig, logger
+from dse4wse.utils import TensorInfo, TrainingConfig, logger, factoring
 
 BFLOAT16 = 10
 
@@ -31,7 +44,7 @@ class WseTransformerRunner():
                  training_config: TrainingConfig,
                  zero_dp_os: bool = True,
                  zero_dp_g: bool = True,
-                 zero_dp_p: bool = True,
+                 zero_dp_p: bool = False,
                  zero_r_pa: bool = True,
                  ) -> None:
         # model parameters
@@ -462,12 +475,126 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                  training_config: TrainingConfig, 
                  zero_dp_os: bool = True, 
                  zero_dp_g: bool = True, 
-                 zero_dp_p: bool = True, 
+                 zero_dp_p: bool = False, 
                  zero_r_pa: bool = True
                  ) -> None:
         super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, inter_wafer_bandwidth, training_config, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa)
+        assert self.zero_dp_p == False, "Each wafer must hold a full copy of weight"
+        assert tensor_parallel_size <= wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width, "Cannot tensor parallel on a tiny wafer!"
+        self.virtual_reticle_id_2_parallel_index = {i: (t, m) for i, (t, m) in enumerate(product(range(tensor_parallel_size), range(self.num_pipeline_stage_per_wafer)))}
+        self.parallel_index_2_virtual_reticle_id = {(t, m): i for i, (t, m) in enumerate(product(range(tensor_parallel_size), range(self.num_pipeline_stage_per_wafer)))}
 
-    def __create_three_stage_task_generator_from_operator(self, op: BaseOperator, forward: bool):
+    def __create_propagation_reticle_task(self, virtual_reticle_id: int, forward: bool) -> FusedReticleTask:
+        tensor_parallel_id, model_parallel_id = self.virtual_reticle_id_2_parallel_index[virtual_reticle_id]
+
+        task_graph = nx.DiGraph()  # for simplicity, there's no edge
+        def add_subtask(name: str, subtask: BaseReticleTask):
+            task_graph.add_node(name, task=subtask)
+
+        # read input from DRAM or previous reticle
+        # needless to assign read & write to the same link
+        if forward:
+            read_input_data_amount = sum([tensor.numel() * self.training_config.get_precision_size() 
+                                for tensor in self._op_graph.get_tensors(kind=['input']).values()])
+            read_input_data_amount //= self.micro_batch_size
+            if model_parallel_id == 0:
+                # We assume each virtual reticle uses its private virtual dram port
+                read_input_subtask = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                                        access_type='read', data_amount=read_input_data_amount)
+            else:
+                peer_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id((tensor_parallel_id, model_parallel_id - 1))
+                read_input_subtask = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', read_input_data_amount)
+            add_subtask('read_input', read_input_subtask)
+        else:
+            read_outgrad_data_amount = sum([tensor.numel() * self.training_config.get_precision_size() 
+                                for tensor in self._op_graph.get_tensors(kind=['output']).values()])
+            read_outgrad_data_amount //= self.micro_batch_size
+            if model_parallel_id == self.num_pipeline_stage_per_wafer - 1:
+                read_outgrad_subtask = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                                        access_type='read', data_amount=read_outgrad_data_amount)
+            else:
+                peer_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id((tensor_parallel_id, model_parallel_id + 1))
+                read_outgrad_subtask = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', read_outgrad_data_amount)
+            add_subtask('read_outgrad', read_outgrad_subtask)
+
+        # compute
+        # allocate cores according to compute amount
+        # The time of running multiple compute tasks on different amount of cores is determined by the slowest one.
+        # This time can also be calculated with a refractored compute amount and the reticle compute power.
+        attn_mac_count = sum([op.get_fp_mac_count() if forward else op.get_bp_mac_count() 
+                              for name, op in self._op_graph.nodes(data='operator') 
+                              if name in ['linear_qkv', 'matmul_qk', 'matmul_scorev', 'linear_proj']]) // self.micro_batch_size
+        mlp_mac_count = sum([op.get_fp_mac_count() if forward else op.get_bp_mac_count() 
+                             for name, op in self._op_graph.nodes(data='operator') 
+                             if name in ['linear_mlp0', 'linear_mlp1']]) // self.micro_batch_size
+        attn_mac_ratio = 1 / self.num_layer_per_pipeline_stage * (attn_mac_count / (attn_mac_count + mlp_mac_count))
+        equivalent_compute_amount = attn_mac_count / attn_mac_ratio
+        compute_task = ComputeReticleTask(virtual_reticle_id, equivalent_compute_amount)
+        add_subtask('compute', compute_task)
+
+        # swap weight if necessary
+        activation_size = sum([tensor.numel() * self.training_config.get_precision_size()
+                               for tensor in self._op_graph.get_tensors(kind=['input', 'activation', 'output']).values()])
+        activation_size = activation_size // self.micro_batch_size * self.num_layer_per_pipeline_stage
+        weight_size = sum([tensor.numel() * self.training_config.get_precision_size()
+                           for tensor in self._op_graph.get_tensors(kind=['weight']).values()])
+        weight_size = weight_size * self.num_layer_per_pipeline_stage
+        reticle_sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config)
+        assert activation_size <= reticle_sram_size, f"Reticle sram {reticle_sram_size} cannot hold even one sequence's activation {activation_size}"
+        if forward:
+            if activation_size + weight_size > reticle_sram_size:
+                read_weight_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                                        access_type='read', data_amount=weight_size)
+                add_subtask('read_weight', read_weight_task)
+        else:
+            if activation_size + 2 * weight_size > reticle_sram_size:
+                read_weight_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                                        access_type='read', data_amount=weight_size)
+                write_weightgrad_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                                        access_type='write', data_amount=weight_size)
+                add_subtask('read_weight', read_weight_task)
+                add_subtask('write_weightgrad', write_weightgrad_task)
+        
+        # allreduce output
+        allreduce_size = sum([tensor.numel() * self.training_config.get_precision_size() 
+                              for tensor in self._op_graph.get_tensors().values() if tensor.name in ['Z', 'X2_mlp']])
+        allreduce_size //= self.micro_batch_size
+        allreduce_size *= self.num_layer_per_pipeline_stage
+        next_peer_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[((tensor_parallel_id + 1) % self.tensor_parallel_size, model_parallel_id)]
+        allreduce_task = PeerAccessReticleTask(virtual_reticle_id, next_peer_virtual_reticle_id, 'write', allreduce_size)
+        add_subtask('allreduce', allreduce_task)
+
+        fused_task = FusedReticleTask(virtual_reticle_id, task_graph, repeated_times=self.micro_batch_size)
+        return fused_task
+
+    def __create_weight_update_reticle_task(self, virtual_reticle_id: int) -> FusedReticleTask:
+        task_graph = nx.DiGraph()  # for simplicity, there's no edge
+        def add_subtask(name: str, subtask: BaseReticleTask):
+            task_graph.add_node(name, task=subtask)
+            
+        precision = self.training_config.get_precision_size()
+        optimizer_state_factor = self.training_config.get_optimizer_state_size()
+        compute_factor = self.training_config.get_weight_update_compute_amount()
+    
+        weight_numel = sum([tensor.numel() for tensor in self._op_graph.get_tensors(kind=['weight']).values()])
+        weight_numel *= self.num_layer_per_pipeline_stage
+        dram_access_amount = weight_numel * (precision + optimizer_state_factor)
+        compute_amount = weight_numel * compute_factor
+
+        read_subtask = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                             access_type='read', data_amount=dram_access_amount)
+        write_subtask = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port=virtual_reticle_id, 
+                                             access_type='write', data_amount=dram_access_amount)
+        compute_subtask = ComputeReticleTask(virtual_reticle_id, compute_amount)
+        add_subtask('read', read_subtask)
+        add_subtask('write', write_subtask)
+        add_subtask('compute', compute_subtask)
+        fused_task = FusedReticleTask(virtual_reticle_id, task_graph, repeated_times=self.micro_batch_size)
+        return fused_task
+
+
+    def __create_three_stage_task_generator_from_matmul_operator(self, op: MatMulOperator, forward: bool):
+        # Deprecated 
         precision = self.training_config.get_precision_size()
         input_tensor_size = sum([tensor.numel() * precision for tensor in op.input_tensors.values()])
         output_tensor_size = sum([tensor.numel() * precision for tensor in op.output_tensors.values()])
@@ -507,31 +634,21 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         Consider all reticles' interaction on the wafer.
         """
         total_latency = 0
-        for op_name, op in self._op_graph.nodes(data='operator'):
-            assert op.op_type == 'Matmul'
-            task_generator = self.__create_three_stage_task_generator_from_operator(op, forward)
-            repeated_times = self.data_parallel_size if self.zero_dp_p else 1
-            repeated_times *= self.num_layer_per_pipeline_stage
-            wse_task = ListWaferTask([task_generator(repeated_times=repeated_times) 
-                                      for _ in range(self.tensor_parallel_size * self.num_pipeline_stage_per_wafer)])
-            mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-            wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
-            op_latency = wse_evaluator.get_total_latency()
 
-            total_latency += op_latency
+        # propagation latency 
+        wse_task = ListWaferTask([self.__create_propagation_reticle_task(vrid, forward=True) for vrid in self.virtual_reticle_id_2_parallel_index])
+        mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
+        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+        total_latency += wse_evaluator.get_total_latency()
         
         if not forward:
             # consider updating weights
-            for tensor in self._op_graph.get_tensors(kind=['weight']).values():
-                task_generator = self.__create_three_stage_task_generator_from_weight_update(tensor)
-                repeated_times = self.num_layer_per_pipeline_stage
-                wse_task = ListWaferTask([task_generator(repeated_times=repeated_times)
-                                          for _ in range(self.tensor_parallel_size * self.num_pipeline_stage_per_wafer)])
-                mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-                wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
-                weight_latency = wse_evaluator.get_total_latency()
-                total_latency += weight_latency  # this is very little amount
+            wse_task = ListWaferTask([self.__create_weight_update_reticle_task(vrid) for vrid in self.virtual_reticle_id_2_parallel_index])
+            mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
+            wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+            total_latency += wse_evaluator.get_total_latency()
 
         return total_latency
     
-    # TODO: add activation comm cost analysis, such as allreduce output
+    def _get_activation_comm_latency(self, forward: bool) -> float:
+        return 0  # overlapped with computation

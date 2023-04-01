@@ -25,6 +25,7 @@ def create_a100_like_wse(**kwargs):
     # instantiate wafer scale engine
     core_config = {
         'core_compute_power': 312e12,
+        'core_sram_size': 48e6,
     }
     reticle_config = {  # 1 GPU
         'core_array_height': 1,
