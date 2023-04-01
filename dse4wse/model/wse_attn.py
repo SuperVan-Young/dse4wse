@@ -630,39 +630,6 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         }
         return ThreeStageReticleTaskGenerator(**kwargs)
 
-    def __get_self_attention_fp_best_blocking(self) -> Tuple[int, int]:
-        """ Given limited SRAM, we want to know the best blocking strategy that incurs minimum DRAM access overhead.
-        For simplicity, we assume output stationary dataflow, and split input on batchsize and split weight on head.
-        It is rather difficult to simultaneously consider X -> Y -> Z, since this prohibits Y from reuse,
-        and might require a LOT of SRAM to hold the result.
-        Returns:
-            #split_batch_size: read W_qkv for this repetition
-            #split_head_size:  read X for this repetition
-        """
-        tensors = self._op_graph.get_tensors()
-        B, head, S, h = tensors['Y'].shape
-        precision = self.training_config.get_precision_size()
-        get_tensor_size = lambda s: tensors[s].numel() * precision
-        reticle_sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config)
-
-        candidate_blocking_size = product(factoring(B), factoring(head))  # TODO: B and head is small and can brute force search
-        best_split = (B, head)
-        best_dram_access_amount = get_tensor_size('X') * head + get_tensor_size('W_qkv') * B  # output stationary, only write once
-        for B_, head_ in candidate_blocking_size:
-            X_buffer = B_ * S * 1
-            W_buffer = 1 * head_ * h
-            QKVY_size = 4 * B_ * head_ * S * h * precision
-            score_size = B_ * head_ * S * S * precision
-            sram_utilization = QKVY_size + score_size + X_buffer + W_buffer
-            if sram_utilization <= reticle_sram_size:
-                dram_access_amount = get_tensor_size('X') * (head // head_) + get_tensor_size('W_qkv') * (B // B_)
-                if dram_access_amount < best_dram_access_amount:
-                    best_split = (B // B_, head // head_)
-                    best_dram_access_amount = dram_access_amount
-
-        return best_split
-    
-
     
     def __get_linear_best_blocking(self, 
                                    shapes: Dict[str, Tuple],
@@ -676,7 +643,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             - shapes: shapes of A, B and Y, or other intermeidate tensors
             - dim_types: M, N for splitting, K for reduction, - for placeholder
         Returns:
-            #split_M, #split_N, #best_dram_access_amount
+            #split_M, #split_N
         """
         assert 'M' not in dim_types['B']
         assert 'N' not in dim_types['A']
@@ -729,9 +696,10 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     def __get_forward_propatation_latency(self) -> float:
         tensors = self._op_graph.get_tensors()
         precision = self.training_config.get_precision_size()
+        self_attention_repeats = {}
 
         # self attention
-        repeat_W_qkv, repeat_X = self.__get_linear_best_blocking(
+        self_attention_repeats['W_qkv'], self_attention_repeats['X'] = self.__get_linear_best_blocking(
             shapes={
                 'A': tensors['X'].shape,
                 'B': tensors['W_qkv'].shape,
@@ -749,7 +717,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             N_upper_bound=self.attention_heads//self.tensor_parallel_size,
         )
         # Proj
-        repeat_W_proj, repeat_Y = self.__get_linear_best_blocking(
+        self_attention_repeats['W_proj'], self_attention_repeats['Y'] = self.__get_linear_best_blocking(
             shapes={
                 'A': tensors['Y'].shape,
                 'B': tensors['W_proj'].shape,
@@ -758,35 +726,70 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             dim_types={
                 'A': ('M', '-', 'K'),
                 'B': ('K', 'N'),
-                'Y': ('M', 'N', '-'),
+                'Y': ('M', '-', 'N'),
             },
         )
 
-        input_data_amount = 
+        self_attention_read_data_amount = sum([tensors[name].numel() * repeat for name, repeat in self_attention_repeats.items()]) * precision
+        self_attention_write_data_amount = sum([tensors[name].numel() for name in ('Y', 'Z')]) * precision
+        self_attention_compute_amount = sum([op.get_fp_mac_count() for node, op in self._op_graph.nodes(data='operator') 
+                                            if node in ('linear_qkv', 'matmul_qk', 'matmul_scorev', 'linear_proj')])
+        self_attention_task_generator = ThreeStageReticleTaskGenerator({
+            'compute_amount': self_attention_compute_amount,
+            'read_data_amount': self_attention_read_data_amount,
+            'write_data_amount': self_attention_write_data_amount,
+            'reuse_dram_port': False,
+        })
+        self_attention_wse_task = ListWaferTask([self_attention_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
+        self_attention_latency = self.__run_wse_task(self_attention_wse_task)
 
-                                   
-    
-    def _get_propagation_latency(self, forward: bool) -> float:
-        """
-        Estimation on propagation latency of single reticle running one pipeline stage
-        Consider all reticles' interaction on the wafer.
-        """
-        total_latency = 0
+        mlp_repeats = {}
+        # MLP 1
+        mlp_repeats['W1_mlp'], mlp_repeats['X0_mlp'] = self.__get_linear_best_blocking(
+            
+            shapes={
+                'A': tensors['X0_mlp'].shape,
+                'B': tensors['W1_mlp'].shape,
+                'Y': tensors['X1_mlp'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('K', 'N'),
+                'Y': ('M', '-', 'N'),
+            },
+        )
 
-        # propagation latency 
-        wse_task = ListWaferTask([self.__create_propagation_reticle_task(vrid, forward=True) for vrid in self.virtual_reticle_id_2_parallel_index])
-        mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
-        total_latency += wse_evaluator.get_total_latency()
-        
-        if not forward:
-            # consider updating weights
-            wse_task = ListWaferTask([self.__create_weight_update_reticle_task(vrid) for vrid in self.virtual_reticle_id_2_parallel_index])
-            mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-            wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
-            total_latency += wse_evaluator.get_total_latency()
+        # MLP 2
+        mlp_repeats['W2_mlp'], mlp_repeats['X1_mlp'] = self.__get_linear_best_blocking(
+            
+            shapes={
+                'A': tensors['X1_mlp'].shape,
+                'B': tensors['W2_mlp'].shape,
+                'Y': tensors['X2_mlp'].shape,
+            },
+            dim_types={
+                'A': ('M', '-', 'K'),
+                'B': ('K', 'N'),
+                'Y': ('M', '-', 'N'),
+            },
+        )
+        mlp_read_data_amount = sum([tensors[name].numel() * repeat for name, repeat in mlp_repeats.items()]) * precision
+        mlp_write_data_amount = sum([tensors[name].numel() for name in ('Y', 'Z')]) * precision
+        mlp_compute_amount = sum([op.get_fp_mac_count() for node, op in self._op_graph.nodes(data='operator') 
+                                            if node in ('linear_mlp1', 'linear_mlp2')])
+        mlp_task_generator = ThreeStageReticleTaskGenerator({
+            'compute_amount': mlp_compute_amount,
+            'read_data_amount': mlp_read_data_amount,
+            'write_data_amount': mlp_write_data_amount,
+            'reuse_dram_port': False,
+        })
+        mlp_wse_task = ListWaferTask([mlp_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
+        mlp_latency = self.__run_wse_task(mlp_wse_task)
+
+        total_latency = self_attention_latency + mlp_latency
+        total_latency *= self.num_layer_per_pipeline_stage
 
         return total_latency
-    
-    def _get_activation_comm_latency(self, forward: bool) -> float:
-        return 0  # overlapped with computation
+
+    def _get_propagation_latency(self, forward: bool) -> float:
+       return self.__get_forward_propatation_latency() if forward else self.__get_backward_propagation_latency()
