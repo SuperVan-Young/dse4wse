@@ -65,8 +65,8 @@ def find_best_micro_batch_size(**kwargs) -> int:
             model_parallel_size=kwargs.get('model_parallel_size'),
             tensor_parallel_size=kwargs.get('tensor_parallel_size'),
             wafer_scale_engine=kwargs.get('wafer_scale_engine'),
-            inter_wafer_bandwidth=kwargs.get('inter_wafer_bandwidth'),
             training_config=kwargs.get('training_config'),
+            inter_wafer_bandwidth=kwargs.get('inter_wafer_bandwidth'),
         )
         try:
             assert wse_transformer_runner.get_dram_utilization()
@@ -90,7 +90,8 @@ def test_attention_module(**kwargs):
         tensor_parallel_size=kwargs.get('tensor_parallel_size'),
     )
     training_config = TrainingConfig()
-    inter_wafer_bandwidth = 25e9 * kwargs.get('tensor_parallel_size')  # infiniband
+    # inter_wafer_bandwidth = 25e9 * kwargs.get('tensor_parallel_size')  # infiniband
+    inter_wafer_bandwidth = None  # all-around the wafer
     best_micro_batch_size = find_best_micro_batch_size(
         wafer_scale_engine=wafer_scale_engine,
         training_config=training_config,
@@ -110,8 +111,8 @@ def test_attention_module(**kwargs):
         model_parallel_size=kwargs.get('model_parallel_size'),
         tensor_parallel_size=kwargs.get('tensor_parallel_size'),
         wafer_scale_engine=wafer_scale_engine,
-        inter_wafer_bandwidth=inter_wafer_bandwidth,
         training_config=training_config,
+        inter_wafer_bandwidth=inter_wafer_bandwidth,
     )
 
     throughput = wse_transformer_runner.get_training_throughput()

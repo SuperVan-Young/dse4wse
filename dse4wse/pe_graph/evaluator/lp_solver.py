@@ -34,7 +34,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         repeated_times = max([reticle_task.repeated_times for reticle_task in self.task])  # times
 
         # debugging
-        self.profile_utilization(G, min_freq, per_module=True, per_task=True)
+        self.profile_utilization(G, min_freq, per_module=False, per_task=False)
 
         return repeated_times / min_freq
 
@@ -69,7 +69,6 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                         link_list = self.mapper.find_read_dram_routing_path(physical_reticle_coordinate, physical_dram_port_coordinate)
                     else:
                         link_list = self.mapper.find_write_dram_routing_path(physical_reticle_coordinate, physical_dram_port_coordinate)
-                    logger.debug(f"Dram access amount {subtask.data_amount} routing: {link_list}")
                     for link in link_list:
                         edata = G.edges[link]
                         edata['transmission_mark'][vrid] = subtask.data_amount

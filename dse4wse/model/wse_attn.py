@@ -1,7 +1,7 @@
 
 from math import ceil
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 from itertools import product
 from functools import reduce
 import networkx as nx
@@ -40,8 +40,8 @@ class WseTransformerRunner():
                  model_parallel_size: int,
                  tensor_parallel_size: int,
                  wafer_scale_engine: WaferScaleEngine,
-                 inter_wafer_bandwidth: int,
                  training_config: TrainingConfig,
+                 inter_wafer_bandwidth: Union[int, None] = None,
                  zero_dp_os: bool = True,
                  zero_dp_g: bool = True,
                  zero_dp_p: bool = False,
@@ -71,10 +71,12 @@ class WseTransformerRunner():
 
         # wse platform
         self.wafer_scale_engine = wafer_scale_engine
-        self.inter_wafer_bandwidth = inter_wafer_bandwidth
+        self.inter_wafer_bandwidth = inter_wafer_bandwidth if inter_wafer_bandwidth \
+                                     else (wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width * wafer_scale_engine.inter_reticle_bandwidth)
 
         # training settings 
         self.training_config = training_config
+        assert training_config
 
         self.num_layer_per_pipeline_stage = number_of_layers // model_parallel_size
         self.num_pipeline_stage_per_wafer = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width // tensor_parallel_size
@@ -471,14 +473,14 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                  model_parallel_size: int, 
                  tensor_parallel_size: int, 
                  wafer_scale_engine: WaferScaleEngine, 
-                 inter_wafer_bandwidth: int, 
                  training_config: TrainingConfig, 
+                 inter_wafer_bandwidth: Union[int, None] = None,
                  zero_dp_os: bool = True, 
                  zero_dp_g: bool = True, 
                  zero_dp_p: bool = False, 
                  zero_r_pa: bool = True
                  ) -> None:
-        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, inter_wafer_bandwidth, training_config, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa)
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa)
         assert self.zero_dp_p == False, "Each wafer must hold a full copy of weight"
         assert tensor_parallel_size <= wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width, "Cannot tensor parallel on a tiny wafer!"
         self.virtual_reticle_id_2_parallel_index = {i: (t, m) for i, (t, m) in enumerate(product(range(tensor_parallel_size), range(self.num_pipeline_stage_per_wafer)))}
@@ -798,6 +800,9 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         total_latency = self_attention_latency + mlp_latency
         total_latency *= self.num_layer_per_pipeline_stage
 
+        logger.debug(f"FP self-attention repeats: {self_attention_repeats}")
+        logger.debug(f"FP MLP repeats: {mlp_repeats}")
+
         return total_latency
     
     def __get_backward_propagation_latency(self) -> float:
@@ -995,6 +1000,10 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         weight_update_latency = self.__run_wse_task(weight_update_wse_task)
 
         total_latency = mlp_latency + self_attention_latency + rematerialization_latency + weight_update_latency
+
+        logger.debug(f"BP self-attention repeats: {self_attention_repeats}")
+        logger.debug(f"BP MLP repeats: {mlp_repeats}")
+
         return total_latency
 
     def _get_propagation_latency(self, forward: bool) -> float:

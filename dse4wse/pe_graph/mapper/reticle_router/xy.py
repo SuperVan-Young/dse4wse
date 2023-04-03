@@ -21,6 +21,6 @@ class XYReticleRouter(BaseReticleRouter):
         if x2 != x1: path.append((x2, y1))
         for y in range(y1, y2, 1 if y2 > y1 else -1): path.append((x2, y))
         if y2 != y1: path.append((x2, y2))
-        logger.debug(f"Routing from {src} to {dst}: {path}")
+        # logger.debug(f"Routing from {src} to {dst}: {path}")
         return path
 
