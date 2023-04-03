@@ -1000,6 +1000,10 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         weight_update_latency = self.__run_wse_task(weight_update_wse_task)
 
         total_latency = mlp_latency + self_attention_latency + rematerialization_latency + weight_update_latency
+        logger.debug(f"MLP bp latency: {mlp_latency} ns")
+        logger.debug(f"Self-attention bp latency: {self_attention_latency} ns")
+        logger.debug(f"FP latency: {rematerialization_latency} ns")
+        logger.debug(f"Weight update latency: {weight_update_latency} ns")
 
         logger.debug(f"BP self-attention repeats: {self_attention_repeats}")
         logger.debug(f"BP MLP repeats: {mlp_repeats}")

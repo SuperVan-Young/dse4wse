@@ -36,7 +36,7 @@ def create_a100_like_wse(**kwargs):
     wse_config = {   # 1 node
         'reticle_array_height': T,
         'reticle_array_width': P,
-        'inter_reticle_bandwidth': 600e9,
+        'inter_reticle_bandwidth': 600e9 * 7,
         'dram_size': T * P * 80e9,
         'dram_bandwidth': 1.94e12,
         'dram_stacking_type': '2d',
