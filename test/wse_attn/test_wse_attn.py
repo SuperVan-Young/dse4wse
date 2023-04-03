@@ -79,7 +79,7 @@ def find_best_micro_batch_size(**kwargs) -> int:
             continue
     if best_micro_batch_size == -1:
         logger.error("Failed to find valid micro batch size")
-        exit(1)
+        raise RuntimeError("Failed to find valid micro batch size")
     for handler in logger.handlers:
         handler.setLevel('DEBUG')
 
@@ -98,7 +98,6 @@ def test_attention_module(**kwargs):
         inter_wafer_bandwidth=inter_wafer_bandwidth,
         **kwargs,
     )
-    best_micro_batch_size = 4
     logger.info(f"best micro batch size: {best_micro_batch_size}")
 
     wse_transformer_runner = WseTransformerRunner(

@@ -1,0 +1,61 @@
+{
+    "Core" : {
+        "buffer size": {
+            "initial value": 32,
+            "end value": 2048,
+            "style": "exponential",
+            "scale": 2,
+            "unit": "KB"
+        },
+        "buffer bandwidth":{
+            "initial value": 32,
+            "end value": 2048,
+            "style": "exponential",
+            "scale": 2,
+            "unit": "bit/cycle"
+        },
+        "MAC number": {
+            "initial value": 4,
+            "end value": 256,
+            "style": "exponential",
+            "scale": 2
+        },
+        "NoC bandwidth": {
+            "initial value": 32,
+            "end value": 4096,
+            "style": "exponential",
+            "scale": 2,
+            "unit": "bit/cycle"
+        },
+        "NoC router virtual channel": {
+            "initial value": 4,
+            "end value": 4,
+            "style": "exponential",
+            "scale": 2
+        },
+        "NoC router buffer size": {
+            "initial value": 4,
+            "end value": 4,
+            "style": "exponential",
+            "scale": 2
+        }
+    },
+    "Reticle": {
+        "inter-reticle bandwidth": {
+            "initial value": 1.0,
+            "end value": 1.0,
+            "style": "linear",
+            "scale": 0.25,
+            "unit": "NoC bandwidth"
+        }
+    },
+    "Wafer": {
+        "off-chip memory bandwidth": {
+            "initial value": 900,
+            "end value": 900,
+            "style": "linear",
+            "scale": 900,
+            "unit": "GB/s"
+        }
+    }
+}
