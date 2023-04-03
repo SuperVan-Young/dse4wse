@@ -749,6 +749,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'write_data_amount': [self_attention_write_data_amount],
             'reuse_dram_port': False,
         })
+        logger.info(f"Running self-attention submodule forward propagation")
         self_attention_wse_task = ListWaferTask([self_attention_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         self_attention_latency = self.__run_wse_task(self_attention_wse_task)
 
@@ -790,6 +791,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'write_data_amount': [mlp_write_data_amount],
             'reuse_dram_port': False,
         })
+        logger.info(f"Running MLP submodule forward propagation")
         mlp_wse_task = ListWaferTask([mlp_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         mlp_latency = self.__run_wse_task(mlp_wse_task)
 
@@ -881,6 +883,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'write_data_amount': [mlp_write_data_amount],
             'reuse_dram_port': False,
         })
+        logger.info(f"Running MLP module backward propagation")
         mlp_wse_task = ListWaferTask([mlp_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         mlp_latency = self.__run_wse_task(mlp_wse_task)
 
@@ -970,6 +973,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'write_data_amount': [self_attention_write_data_amount],
             'reuse_dram_port': False,
         })
+        logger.info(f"Running self-attention submodule backward propagation")
         self_attention_wse_task = ListWaferTask([self_attention_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         self_attention_latency = self.__run_wse_task(self_attention_wse_task)
 
@@ -986,6 +990,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'write_data_amount': [weight_update_dram_access_amount],
             'reuse_dram_port': False,
         })
+        logger.info(f"Running weight updating")
         weight_update_wse_task = ListWaferTask([weight_update_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         weight_update_latency = self.__run_wse_task(weight_update_wse_task)
 

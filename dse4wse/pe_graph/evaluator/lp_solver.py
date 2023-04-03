@@ -34,7 +34,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         repeated_times = max([reticle_task.repeated_times for reticle_task in self.task])  # times
 
         # debugging
-        self.profile_utilization(G, min_freq)
+        self.profile_utilization(G, min_freq, per_module=True, per_task=True)
 
         return repeated_times / min_freq
 
@@ -69,6 +69,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                         link_list = self.mapper.find_read_dram_routing_path(physical_reticle_coordinate, physical_dram_port_coordinate)
                     else:
                         link_list = self.mapper.find_write_dram_routing_path(physical_reticle_coordinate, physical_dram_port_coordinate)
+                    logger.debug(f"Dram access amount {subtask.data_amount} routing: {link_list}")
                     for link in link_list:
                         edata = G.edges[link]
                         edata['transmission_mark'][vrid] = subtask.data_amount
@@ -152,7 +153,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # logger.debug(f"linprog result min freq: {min_freq} iter/second")
         return min_freq
     
-    def profile_utilization(self, G: DiGraph, min_freq: float, group=True, perlink=False, pertask=False):
+    def profile_utilization(self, G: DiGraph, min_freq: float, group=True, per_module=False, per_task=False):
         logger.debug("Profiling resource utilization for lp solver")
         group_compute_utils = []
         group_dram_bandwidth_utils = []
@@ -164,25 +165,25 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                 total_data_amount = sum(ndata['compute_mark'].values())
                 total_util = total_data_amount*min_freq/reticle_compute_power
                 group_compute_utils.append(total_util)
-                if perlink:
+                if per_module:
                     logger.debug(f"Reticle coordinate {node}: compute_util={total_util:.2%}")
-                if pertask:
+                if per_task:
                     for vrid, data_amount in ndata['compute_mark'].items():
-                        logger.debug(f"Reticle coordinate {node}: vrid={vrid}, compute_util={data_amount*min_freq/reticle_compute_power:.2%}")
+                        logger.debug(f"- Reticle coordinate {node}: vrid={vrid}, compute_util={data_amount*min_freq/reticle_compute_power:.2%}")
             else:
-                group_compute_utils.append(0)
+                if ndata['reticle']: group_compute_utils.append(0)
             if ndata['dram_access_mark']:
                 dram_bandwidth = self.hardware.dram_bandwidth
                 total_data_amount = sum(ndata['dram_access_mark'].values())
                 total_util = total_data_amount*min_freq/dram_bandwidth
                 group_dram_bandwidth_utils.append(total_util)
-                if perlink:
+                if per_module:
                     logger.debug(f"Reticle coordinate {node}: dram_bandwidth_util={total_util:.2%}")
-                if pertask:
+                if per_task:
                     for vrid, data_amount in ndata['dram_access_mark'].items():
-                        logger.debug(f"Reticle coordinate {node}: vrid={vrid}, dram_bandwidth_util={data_amount*min_freq/dram_bandwidth:.2%}")
+                        logger.debug(f"- Reticle coordinate {node}: vrid={vrid}, dram_bandwidth_util={data_amount*min_freq/dram_bandwidth:.2%}")
             else:
-                group_dram_bandwidth_utils.append(0)
+                if ndata['dram_port']: group_dram_bandwidth_utils.append(0)
 
         for u, v, edata in G.edges(data=True):
             if edata['transmission_mark']:
@@ -190,11 +191,11 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                 total_data_amount = sum(edata['transmission_mark'].values())
                 total_util = total_data_amount*min_freq/inter_reticle_bandwidth
                 group_inter_reticle_bandwidth_utils.append(total_util)
-                if perlink:
+                if per_module:
                     logger.debug(f"Reticle link {u, v}: link_bandwidth={total_util:.2%}")
-                if pertask:
+                if per_task:
                     for vrid, data_amount in edata['transmission_mark'].items():
-                        logger.debug(f"Reticle link {u, v}: vrid={vrid}, link_bandwidth_util={data_amount*min_freq/inter_reticle_bandwidth:.2%}")
+                        logger.debug(f"- Reticle link {u, v}: vrid={vrid}, link_bandwidth_util={data_amount*min_freq/inter_reticle_bandwidth:.2%}")
             else:
                 group_inter_reticle_bandwidth_utils.append(0)
 

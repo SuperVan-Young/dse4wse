@@ -137,7 +137,7 @@ def run_testcase(case):
     test_attention_module(**megatron_config)
 
 if __name__ == "__main__":
-    run_testcase(9)
+    run_testcase(3)
     # for i in range(9, 10):
     #     try:
     #         run_testcase(i)
