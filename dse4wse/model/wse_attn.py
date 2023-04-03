@@ -286,7 +286,7 @@ class WseTransformerRunner():
     
     def _get_weight_comm_latency(self, forward: bool) -> float:
         """
-        weight communication latency of whole wafer running one pipeline stage
+        weight communication of complete minibatch
         """
         inter_wafer_bandwidth = self.inter_wafer_bandwidth
 
@@ -301,7 +301,7 @@ class WseTransformerRunner():
             else:
                 # allgather 1 share of weight with data parallel peers
                 weight_size = weight_tensor_total_numel * self.training_config.get_precision_size()
-                comm_volume = weight_size
+                comm_volume = weight_size * ceil(self.mini_batch_size / self.micro_batch_size) # for every iteration!
                 return comm_volume / inter_wafer_bandwidth
         else:
             # reduce scatter 1 share of grad and all gather 1 share of weight
@@ -343,11 +343,10 @@ class WseTransformerRunner():
         input_inter_wafer_latency = input_tensor_total_size / inter_wafer_bandwidth
 
         compute_latency = self._get_propagation_latency(forward=True)
-        weight_comm_latency = self._get_weight_comm_latency(forward=True)
         activation_comm_latency = self._get_activation_comm_latency(forward=True)
 
         # TODO: currently, swapping weight cannot be overlapped with compute
-        inter_wafer_latency = input_inter_wafer_latency + weight_comm_latency
+        inter_wafer_latency = input_inter_wafer_latency
         inter_reticle_latency = activation_comm_latency
         total_latency = compute_latency + inter_wafer_latency + inter_reticle_latency
 
@@ -372,17 +371,15 @@ class WseTransformerRunner():
         # rematerialize activation
         # TODO: ZeRO-R's comm overhead is ignored, since WSE can store activation without replication
         fp_compute_latency = self._get_propagation_latency(forward=True)
-        fp_weight_comm_latency = self._get_weight_comm_latency(forward=True)
         fp_activation_comm_latency = self._get_activation_comm_latency(forward=True)
 
         # bp latency
         bp_compute_latency = self._get_propagation_latency(forward=False)
-        bp_weight_comm_latency = self._get_weight_comm_latency(forward=False)
         bp_activation_comm_latency = self._get_activation_comm_latency(forward=False)
 
         compute_latency = fp_compute_latency + bp_compute_latency
         inter_reticle_latency = fp_activation_comm_latency + bp_activation_comm_latency
-        inter_wafer_latency = grad_inter_wafer_latency + fp_weight_comm_latency + bp_weight_comm_latency
+        inter_wafer_latency = grad_inter_wafer_latency
         total_latency = compute_latency + inter_wafer_latency + inter_reticle_latency
 
         logger.info("Summary for backward propagation latency estimation:")
@@ -441,8 +438,9 @@ class WseTransformerRunner():
 
         single_stage_fp_latency = self.get_fp_latency()
         single_stage_bp_latency = self.get_bp_latency()
+        weight_comm_latency = self._get_weight_comm_latency(forward=True) + self._get_weight_comm_latency(forward=False) 
         pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
-        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency)
+        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency) + weight_comm_latency
         sequence_per_sec = self.mini_batch_size / whole_batch_latency
 
         return sequence_per_sec
@@ -452,8 +450,9 @@ class WseTransformerRunner():
         
         single_stage_fp_latency = self.get_fp_latency()
         single_stage_bp_latency = self.get_bp_latency()
+        weight_comm_latency = self._get_weight_comm_latency(forward=True) + self._get_weight_comm_latency(forward=False) 
         pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
-        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency)
+        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency) + weight_comm_latency
 
         compute_latency = self._get_compute_latency(forward=True) * 2 + self._get_compute_latency(forward=False)
         compute_latency *= ceil(self.mini_batch_size / self.micro_batch_size)
@@ -797,8 +796,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         mlp_wse_task = ListWaferTask([mlp_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
         mlp_latency = self.__run_wse_task(mlp_wse_task)
 
-        total_latency = self_attention_latency + mlp_latency
-        total_latency *= self.num_layer_per_pipeline_stage
+        total_latency = (self_attention_latency + mlp_latency) * self.num_layer_per_pipeline_stage
 
         logger.debug(f"FP self-attention repeats: {self_attention_repeats}")
         logger.debug(f"FP MLP repeats: {mlp_repeats}")
@@ -984,26 +982,25 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
 
         rematerialization_latency = self.__get_forward_propatation_latency(store_all_activation=True)
 
-        weight_total_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.kind == 'weight'])
-        optimizer_state_factor = self.training_config.get_optimizer_state_size()
-        weight_update_compute_factor = self.training_config.get_weight_update_compute_amount()
-        weight_update_dram_access_amount = weight_total_numel * (precision + optimizer_state_factor)
-        weight_update_compute_amount = weight_total_numel * weight_update_compute_factor
-        weight_update_task_generator = ThreeStageReticleTaskGenerator(**{
-            'compute_amount': weight_update_compute_amount,
-            'read_data_amount': [weight_update_dram_access_amount],
-            'write_data_amount': [weight_update_dram_access_amount],
-            'reuse_dram_port': False,
-        })
-        logger.info(f"Running weight updating")
-        weight_update_wse_task = ListWaferTask([weight_update_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
-        weight_update_latency = self.__run_wse_task(weight_update_wse_task)
+        # this part is ignored, since weight shouldn't be updated for every micro batch
+        # for every mini-batch, it's completely transmission bounded
 
-        total_latency = mlp_latency + self_attention_latency + rematerialization_latency + weight_update_latency
-        logger.debug(f"MLP bp latency: {mlp_latency} ns")
-        logger.debug(f"Self-attention bp latency: {self_attention_latency} ns")
-        logger.debug(f"FP latency: {rematerialization_latency} ns")
-        logger.debug(f"Weight update latency: {weight_update_latency} ns")
+        # weight_total_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.kind == 'weight'])
+        # optimizer_state_factor = self.training_config.get_optimizer_state_size()
+        # weight_update_compute_factor = self.training_config.get_weight_update_compute_amount()
+        # weight_update_dram_access_amount = weight_total_numel * (precision + optimizer_state_factor)
+        # weight_update_compute_amount = weight_total_numel * weight_update_compute_factor
+        # weight_update_task_generator = ThreeStageReticleTaskGenerator(**{
+        #     'compute_amount': weight_update_compute_amount,
+        #     'read_data_amount': [weight_update_dram_access_amount],
+        #     'write_data_amount': [weight_update_dram_access_amount],
+        #     'reuse_dram_port': False,
+        # })
+        # logger.info(f"Running weight updating")
+        # weight_update_wse_task = ListWaferTask([weight_update_task_generator(repeated_times=1) for _ in self.virtual_reticle_id_2_parallel_index])
+        # weight_update_latency = self.__run_wse_task(weight_update_wse_task)
+
+        total_latency = (mlp_latency + self_attention_latency) * self.num_layer_per_pipeline_stage + rematerialization_latency
 
         logger.debug(f"BP self-attention repeats: {self_attention_repeats}")
         logger.debug(f"BP MLP repeats: {mlp_repeats}")

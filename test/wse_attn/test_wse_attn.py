@@ -98,6 +98,7 @@ def test_attention_module(**kwargs):
         inter_wafer_bandwidth=inter_wafer_bandwidth,
         **kwargs,
     )
+    best_micro_batch_size = 4
     logger.info(f"best micro batch size: {best_micro_batch_size}")
 
     wse_transformer_runner = WseTransformerRunner(
@@ -138,7 +139,7 @@ def run_testcase(case):
     test_attention_module(**megatron_config)
 
 if __name__ == "__main__":
-    run_testcase(3)
+    run_testcase(9)
     # for i in range(9, 10):
     #     try:
     #         run_testcase(i)
