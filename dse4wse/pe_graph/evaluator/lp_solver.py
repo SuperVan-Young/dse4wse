@@ -33,10 +33,6 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         G = self.__build_annotated_graph()
         min_freq = self.__lp_solver(G)  # times / second
         repeated_times = max([reticle_task.repeated_times for reticle_task in self.task])  # times
-
-        # debugging
-        self.profile_utilization(G, min_freq, per_module=False, per_task=False)
-
         return repeated_times / min_freq
 
     def __build_annotated_graph(self) -> DiGraph:
@@ -173,8 +169,12 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
 
         return min_freq
     
-    def profile_utilization(self, G: DiGraph, min_freq: float, group=True, per_module=False, per_task=False):
+    def profile_utilization(self, group=True, per_module=False, per_task=False):
         logger.debug("Profiling resource utilization for lp solver")
+        
+        G = self.__build_annotated_graph()
+        min_freq = self.__lp_solver(G)  # times / second
+
         group_compute_utils = []
         group_dram_bandwidth_utils = []
         group_inter_reticle_bandwidth_utils = []
@@ -226,3 +226,10 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             logger.debug(f"Maximum inter reticle bandwidth util: {np.max(group_inter_reticle_bandwidth_utils).item():.2%}")
             logger.debug(f"Average DRAM bandwidth util: {np.mean(group_dram_bandwidth_utils).item():.2%}")
             logger.debug(f"Maximum DRAM bandwidth util: {np.max(group_dram_bandwidth_utils).item():.2%}")
+
+        final_report = {
+            'compute': np.max(group_compute_utils).item(),
+            'inter_reticle': np.max(group_inter_reticle_bandwidth_utils).item(),
+            'dram': np.max(group_dram_bandwidth_utils).item(),
+        }
+        return final_report

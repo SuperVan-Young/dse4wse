@@ -69,12 +69,10 @@ def create_evaluator(
     data_parallel_size: int = 1,
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
+    num_reticle_per_pipeline_stage: int = 1,
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
     """
-    reticle_array_size = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width
-    assert tensor_parallel_size <= reticle_array_size
-
     default_training_config = TrainingConfig()
     default_inter_wafer_bandwidth = None
 
@@ -91,6 +89,7 @@ def create_evaluator(
         wafer_scale_engine=wafer_scale_engine,
         training_config=default_training_config,
         inter_wafer_bandwidth=default_inter_wafer_bandwidth,
+        num_reticle_per_pipeline_stage=num_reticle_per_pipeline_stage,
     )
 
     return wse_transformer_runner
@@ -106,8 +105,11 @@ def nohup_decorator(func):
             return np.inf
     return wrapper
 
-@nohup_decorator
+# @nohup_decorator
 def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='throughput'):
+    logger.info(f"Design point: {design_point}")
+    logger.info(f"Model parameters: {model_parameters}")
+
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
     evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
 
@@ -116,6 +118,7 @@ def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='th
         result = evaluator.get_training_throughput()
     else:
         raise NotImplementedError
+    logger.info(f"{metric}: {result}")
     return result
 
 def design_space_exploration():
@@ -124,13 +127,15 @@ def design_space_exploration():
         # test_index = random.randint(0, len(df.index))
         test_index = 630
         test_design_point = df.loc[test_index].to_dict()
-        print(test_design_point)
         test_model_parameters = {
-            "attention_heads": 160,
-            "hidden_size": 25600,
+            "attention_heads": 96,
+            "hidden_size": 12288,
             "sequence_length": 2048,
             "number_of_layers": 160,
             "mini_batch_size": 3072,
+            "tensor_parallel_size": 4,
+            "model_parallel_size": 160,
+            "num_reticle_per_pipeline_stage": 60,
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 

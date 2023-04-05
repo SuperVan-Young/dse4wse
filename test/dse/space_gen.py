@@ -126,7 +126,7 @@ class design_space_construction():
 
         print(f"#Design_Points = {len(df.index)}")
 
-        df.to_excel("design_points.xlsx")
+        df.to_excel("design_points.xlsx", index=False)
 
     def get_sram_area(self, core_buffer_size, core_buffer_bw):
         sram_compiler_result = self.sram_table[str(core_buffer_size)][str(core_buffer_bw)]

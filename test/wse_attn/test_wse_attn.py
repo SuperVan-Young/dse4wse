@@ -8,8 +8,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import traceback
 
-# from dse4wse.model.wse_attn import WseTransformerRunner
-from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+from dse4wse.model.wse_attn import WseTransformerRunner
+# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 
@@ -25,7 +25,8 @@ def create_a100_like_wse(**kwargs):
     # instantiate wafer scale engine
     core_config = {
         'core_compute_power': 312e12,
-        'core_sram_size': 48e6,
+        # 'core_sram_size': 48e6,
+        'core_sram_size': 48e9, # debugging
     }
     reticle_config = {  # 1 GPU
         'core_array_height': 1,
@@ -68,6 +69,7 @@ def find_best_micro_batch_size(**kwargs) -> int:
             training_config=kwargs.get('training_config'),
             inter_wafer_bandwidth=kwargs.get('inter_wafer_bandwidth'),
         )
+        throughput = wse_transformer_runner.get_training_throughput()
         try:
             assert wse_transformer_runner.get_dram_utilization()
             throughput = wse_transformer_runner.get_training_throughput()
@@ -138,11 +140,11 @@ def run_testcase(case):
     test_attention_module(**megatron_config)
 
 if __name__ == "__main__":
-    run_testcase(9)
-    # for i in range(9, 10):
-    #     try:
-    #         run_testcase(i)
-    #     except:
-    #         logger.warning(f"Failure in experiment {i}")
-    #         logger.error(traceback.format_exc())
-    #         exit(1)
+    # run_testcase(1)
+    for i in range(0, 10):
+        try:
+            run_testcase(i)
+        except:
+            logger.warning(f"Failure in experiment {i}")
+            logger.error(traceback.format_exc())
+            exit(1)

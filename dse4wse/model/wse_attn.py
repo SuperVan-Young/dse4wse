@@ -88,7 +88,7 @@ class WseTransformerRunner():
 
         self.num_layer_per_pipeline_stage = number_of_layers // model_parallel_size
         self.num_pipeline_stage_per_wafer = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width // (tensor_parallel_size * num_reticle_per_pipeline_stage)
-        assert self.num_pipeline_stage_per_wafer >= 1, "Not enough reticles on the wafer"
+        assert self.num_pipeline_stage_per_wafer >= 1, f"Requiring {tensor_parallel_size * num_reticle_per_pipeline_stage} reticles but only {wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width} reticles on the wafer!"
 
         self._op_graph = self._build_op_graph()
 
@@ -655,11 +655,17 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         }
 
         if self.is_overlap:
-            if detailed_report:
-                raise NotImplementedError("LP solver hasn't support this feature")
             task_list = sum(task_lists.values(), [])
             wse_task = ListWaferTask(task_list)
-            total_latency = self.__run_wse_task(wse_task)
+            mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
+            wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+            total_latency = wse_evaluator.get_total_latency()
+            if detailed_report:
+                util_report = wse_evaluator.profile_utilization()
+                final_report = {
+                    'compute': util_report['compute'] * total_latency,
+                    'inter_reticle': util_report['inter_reticle'] * total_latency,
+                }
         else:
             raw_report = {}
             for task_type, task_list in task_lists.items():
