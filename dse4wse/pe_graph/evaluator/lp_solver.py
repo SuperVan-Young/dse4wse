@@ -10,7 +10,7 @@ from scipy.optimize import linprog
 import numpy as np
 
 from dse4wse.pe_graph.hardware import WaferScaleEngine
-from dse4wse.pe_graph.task import BaseWaferTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
+from dse4wse.pe_graph.task import BaseReticleTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
 from dse4wse.pe_graph.mapper import WseMapper
 from dse4wse.utils import logger
 
@@ -27,62 +27,80 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                  mapper: WseMapper
                  ) -> None:
         super().__init__(hardware, task, mapper)
+        self.vrid_2_var = {vrid: i for i, vrid in enumerate(task.get_all_virtual_reticle_ids())}
 
     def get_total_latency(self) -> float:
         G = self.__build_annotated_graph()
         min_freq = self.__lp_solver(G)  # times / second
         repeated_times = max([reticle_task.repeated_times for reticle_task in self.task])  # times
-
-        # debugging
-        self.profile_utilization(G, min_freq, per_module=False, per_task=False)
-
         return repeated_times / min_freq
 
     def __build_annotated_graph(self) -> DiGraph:
         # get annotated graph (directly use a graph copy for agile impl)
         G = deepcopy(self.hardware._reticle_graph)
         for node, ndata in G.nodes(data=True):
-            ndata['compute_mark'] = {}
-            ndata['dram_access_mark'] = {}
+            ndata['compute_mark'] = {i: 0 for i in range(len(self.vrid_2_var))}
+            ndata['dram_access_mark'] = {i: 0 for i in range(len(self.vrid_2_var))}
         for u, v, edata in G.edges(data=True):
-            edata['transmission_mark'] = {}
+            edata['transmission_mark'] = {i: 0 for i in range(len(self.vrid_2_var))}
+
+        def add_compute_task(task: ComputeReticleTask):
+            vrid = task.virtual_reticle_id
+            prid = self.mapper.find_physical_reticle_coordinate(vrid)
+            ndata = G.nodes[prid]
+            ndata['compute_mark'][self.vrid_2_var[vrid]] += task.compute_amount
+
+        def add_dram_access_task(task: DramAccessReticleTask):
+            vrid = task.virtual_reticle_id
+            prid = self.mapper.find_physical_reticle_coordinate(vrid)
+            pdpid = self.mapper.find_physical_dram_port_coordinate(task.virtual_dram_port)
+            ndata = G.nodes[pdpid]
+            ndata['dram_access_mark'][self.vrid_2_var[vrid]] += task.data_amount
+
+            routing_func = self.mapper.find_read_dram_routing_path \
+                           if task.access_type == 'read' else self.mapper.find_write_dram_routing_path
+            link_list = routing_func(prid, pdpid)
+            for link in link_list:
+                edata = G.edges[link]
+                edata['transmission_mark'][self.vrid_2_var[vrid]] += task.data_amount
+
+        def add_peer_access_task(task: PeerAccessReticleTask):
+            vrid = task.virtual_reticle_id
+            prid = self.mapper.find_physical_reticle_coordinate(vrid)
+            peer_prid = self.mapper.find_physical_reticle_coordinate(task.peer_virtual_reticle_id)
+            routing_func = self.mapper.find_read_peer_routing_path \
+                           if task.access_type == 'read' else self.mapper.find_write_peer_routing_path
+            link_list = routing_func(prid, peer_prid)
+            for link in link_list:
+                edata = G.edges[link]
+                edata['transmission_mark'][self.vrid_2_var[vrid]] += task.data_amount
+
+        def add_task(task: BaseReticleTask):
+            if isinstance(task, ComputeReticleTask):
+                add_compute_task(task)
+            elif isinstance(task, DramAccessReticleTask):
+                add_dram_access_task(task)
+            elif isinstance(task, PeerAccessReticleTask):
+                add_peer_access_task(task)
+            else:
+                raise NotImplementedError(f"Unrecognized subtask type {task.task_type}")
 
         for reticle_task in self.task:
-            assert reticle_task.task_type == 'fused'
-            vrid = reticle_task.virtual_reticle_id
-            physical_reticle_coordinate = self.mapper.find_physical_reticle_coordinate(vrid)
+            if reticle_task.task_type == 'fused':
+                reticle_task: FusedReticleTask
+                for subtask in reticle_task.get_subtask_list():
+                    add_task(subtask)
+            else:
+                add_task(reticle_task)
 
-            for subtask in reticle_task.get_subtask_list():
-                if subtask.task_type == 'compute':
-                    subtask: ComputeReticleTask
-                    ndata = G.nodes[physical_reticle_coordinate]
-                    ndata['compute_mark'][vrid] = subtask.compute_amount
-
-                elif subtask.task_type == 'dram_access':
-                    subtask: DramAccessReticleTask
-                    physical_dram_port_coordinate = self.mapper.find_physical_dram_port_coordinate(subtask.virtual_dram_port)
-                    # mark dram port access amount
-                    ndata = G.nodes[physical_dram_port_coordinate]
-                    ndata['dram_access_mark'][vrid] = subtask.data_amount
-                    # mark every link's transmission
-                    if subtask.access_type == 'read':
-                        link_list = self.mapper.find_read_dram_routing_path(physical_reticle_coordinate, physical_dram_port_coordinate)
-                    else:
-                        link_list = self.mapper.find_write_dram_routing_path(physical_reticle_coordinate, physical_dram_port_coordinate)
-                    for link in link_list:
-                        edata = G.edges[link]
-                        edata['transmission_mark'][vrid] = subtask.data_amount
-
-                else:
-                    raise NotImplementedError(f"Unrecognized subtask type {subtask.type}")
         return G
         
     def __lp_solver(self, G: DiGraph) -> float:
         """
         Calculate the slowest frequency of all reticle tasks            
         """
-        global_freq_index = len(self.task)
-        num_variables = len(self.task) + 1
+        global_freq_index = len(self.vrid_2_var)
+        num_variables = len(self.vrid_2_var) + 1
 
         c = np.zeros(num_variables)  # f_0, f_1, ..., f_{n-1}, f
         c[global_freq_index] = -1  # maximize f
@@ -96,8 +114,8 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             reticle_compute_power = self.hardware.reticle_compute_power
             A_ub_ = np.zeros(num_variables)
             b_ub_ = np.ones(1) * reticle_compute_power
-            for vrid, data_amount in ndata['compute_mark'].items():
-                A_ub_[vrid] = data_amount
+            for var, data_amount in ndata['compute_mark'].items():
+                A_ub_[var] = data_amount
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 
@@ -105,8 +123,8 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
             A_ub_ = np.zeros(num_variables)
             b_ub_ = np.ones(1) * inter_reticle_bandwidth
-            for vrid, data_amount in edata['transmission_mark'].items():
-                A_ub_[vrid] = data_amount
+            for var, data_amount in edata['transmission_mark'].items():
+                A_ub_[var] = data_amount
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 
@@ -114,8 +132,8 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             dram_bandwidth = self.hardware.dram_bandwidth
             A_ub_ = np.zeros(num_variables)
             b_ub_ = np.ones(1) * dram_bandwidth
-            for vrid, data_amount in ndata['dram_access_mark'].items():
-                A_ub_[vrid] = data_amount
+            for var, data_amount in ndata['dram_access_mark'].items():
+                A_ub_[var] = data_amount
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 
@@ -149,11 +167,14 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         linprog_result = linprog(**linprog_kwargs)
         min_freq = linprog_result.x[global_freq_index]
 
-        # logger.debug(f"linprog result min freq: {min_freq} iter/second")
         return min_freq
     
-    def profile_utilization(self, G: DiGraph, min_freq: float, group=True, per_module=False, per_task=False):
+    def profile_utilization(self, group=True, per_module=False, per_task=False):
         logger.debug("Profiling resource utilization for lp solver")
+        
+        G = self.__build_annotated_graph()
+        min_freq = self.__lp_solver(G)  # times / second
+
         group_compute_utils = []
         group_dram_bandwidth_utils = []
         group_inter_reticle_bandwidth_utils = []
@@ -205,3 +226,10 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             logger.debug(f"Maximum inter reticle bandwidth util: {np.max(group_inter_reticle_bandwidth_utils).item():.2%}")
             logger.debug(f"Average DRAM bandwidth util: {np.mean(group_dram_bandwidth_utils).item():.2%}")
             logger.debug(f"Maximum DRAM bandwidth util: {np.max(group_dram_bandwidth_utils).item():.2%}")
+
+        final_report = {
+            'compute': np.max(group_compute_utils).item(),
+            'inter_reticle': np.max(group_inter_reticle_bandwidth_utils).item(),
+            'dram': np.max(group_dram_bandwidth_utils).item(),
+        }
+        return final_report

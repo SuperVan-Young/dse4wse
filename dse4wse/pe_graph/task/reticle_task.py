@@ -14,6 +14,7 @@ class BaseReticleTask(ABC):
         self.data_parallel_idx = kwargs.get('data_parallel_idx', None)
         self.tensor_parallel_idx = kwargs.get('tensor_parallel_idx', None)
         self.pipeline_parallel_idx = kwargs.get('pipeline_parallel_idx', None)
+        self.repeated_times = kwargs.get("repeated_times", None)
 
     @property
     @abstractmethod

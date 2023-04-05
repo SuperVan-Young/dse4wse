@@ -24,21 +24,22 @@ class NearestDramPortMapper(BaseDramPortMapper):
         # self.profile_result()
 
     def __setup_mapping_table(self) -> Dict[int, Coordinate]:
-        vdpid_2_prcoord = {}  # virtual dram port id -> physical reticle coordinate
+        vdpid_2_prid = {}  # virtual dram port id -> physical reticle coordinate
+
+        def add_dram_access_task(task: DramAccessReticleTask):
+            vrid = task.virtual_reticle_id
+            vdpid = task.virtual_dram_port
+            prid = self.reticle_mapper(vrid)
+            if not vdpid in vdpid_2_prid: vdpid_2_prid[vdpid] = []
+            vdpid_2_prid[vdpid].append(prid)
 
         for reticle_task in self.task:
-            assert reticle_task.task_type == 'fused'
-            for subtask in reticle_task.get_subtask_list():
-                if subtask.task_type == 'compute':
-                    continue                    
-                elif subtask.task_type == 'dram_access':
-                    subtask: DramAccessReticleTask
-                    virtual_dram_port_id = subtask.virtual_dram_port
-                    physical_reticle_coordinate = self.reticle_mapper(subtask.virtual_reticle_id)
-                    if not virtual_dram_port_id in vdpid_2_prcoord: vdpid_2_prcoord[virtual_dram_port_id] = []
-                    vdpid_2_prcoord[virtual_dram_port_id].append(physical_reticle_coordinate)
-                else:
-                    raise NotImplementedError(f"Unrecognized subtask type {subtask.type}")
+            if reticle_task.task_type == 'dram_access':
+                add_dram_access_task(reticle_task)
+            elif reticle_task.task_type == 'fused':
+                for subtask in reticle_task.get_subtask_list():
+                    if subtask.task_type == 'dram_access':
+                        add_dram_access_task(subtask)
         
         def get_nearest_dram_port(coord_list):
             reticle_coords = np.array(coord_list)
@@ -47,7 +48,8 @@ class NearestDramPortMapper(BaseDramPortMapper):
             l1_distance = np.sum(np.abs(dram_ports - reticle_centroid), axis=1, keepdims=False)
             nearest_dram_port = self.dram_port_coordinates[np.argmin(l1_distance)]
             return nearest_dram_port
-        mapping_table = {vdpid: get_nearest_dram_port(prcoord) for vdpid, prcoord in vdpid_2_prcoord.items()}
+
+        mapping_table = {vdpid: get_nearest_dram_port(prid) for vdpid, prid in vdpid_2_prid.items()}
         return mapping_table
 
     def __call__(self, virtual_dram_port_id: int):
@@ -56,14 +58,17 @@ class NearestDramPortMapper(BaseDramPortMapper):
     def profile_result(self):
         logger.debug(f"Profiling dram port mapping result of {__name__}")
 
+        def profile_task(task: DramAccessReticleTask):
+            vrid =  task.virtual_reticle_id
+            prid = self.reticle_mapper(vrid)
+            vdpid = task.virtual_dram_port
+            pdpid = self.__call__(vdpid)
+            logger.debug(f"Reticle {vrid} {prid} -> Dram Port {vdpid} {pdpid}")
+
         for reticle_task in self.task:
-            for subtask in reticle_task.get_subtask_list():
-                if subtask.task_type == 'compute':
-                    continue                    
-                elif subtask.task_type == 'dram_access':
-                    subtask: DramAccessReticleTask
-                    physical_reticle_coordinate = self.reticle_mapper(subtask.virtual_reticle_id)
-                    physical_dram_port_coordinate = self.__call__(subtask.virtual_dram_port)
-                    logger.debug(f"Reticle {subtask.virtual_reticle_id} {physical_reticle_coordinate} -> Dram Port {subtask.virtual_dram_port} {physical_dram_port_coordinate}")
-                else:
-                    raise NotImplementedError(f"Unrecognized subtask type {subtask.type}")
+            if reticle_task.task_type == 'dram_access':
+                profile_task(reticle_task)
+            elif reticle_task.task_type == 'fused':
+                for subtask in reticle_task.get_subtask_list():
+                    if subtask.task_type == 'dram_access':
+                        profile_task(subtask)

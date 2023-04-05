@@ -50,7 +50,11 @@ class WseMapper():
         return self.__path_2_link_list(self._reticle_router(reticle_coordinate, peer_reticle_coordinate))
     
     def __path_2_link_list(self, path: Path) -> LinkList:
-        return [(path[i], path[i+1]) for i in range(len(path) - 1)]
+        link_list = [(path[i], path[i+1]) for i in range(len(path) - 1)]
+        for link in link_list:
+            u, v = link
+            assert u != v
+        return link_list
 
     
 def get_default_mapper(wse: WaferScaleEngine, task: ListWaferTask):
