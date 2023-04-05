@@ -9,4 +9,5 @@ python test/attention/test_attention.py --case 0
 ```
 
 ## PE Graph Estimation
-To be continued...
+
+We provide evaluator for DSE frameworks in `test/dse/api.py`, in which you can find detailed description.

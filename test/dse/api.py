@@ -72,6 +72,10 @@ def create_evaluator(
     num_reticle_per_pipeline_stage: int = 1,
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
+
+    Update: now you can assign arbitrary number of reticles for one pipeline stage.
+    However, we also add more restrictions about on-chip SRAM utilization.
+    SO MAKE SURE YOU USE PROPER CONFIGURATIONS in case of unexpected assertion errors.
     """
     default_training_config = TrainingConfig()
     default_inter_wafer_bandwidth = None
@@ -105,8 +109,10 @@ def nohup_decorator(func):
             return np.inf
     return wrapper
 
-# @nohup_decorator
-def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='throughput'):
+@nohup_decorator
+def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization'):
+    """ Evaluator API for DSE framework. 
+    """
     logger.info(f"Design point: {design_point}")
     logger.info(f"Model parameters: {model_parameters}")
 
@@ -116,12 +122,20 @@ def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='th
     result = None
     if metric == 'throughput':
         result = evaluator.get_training_throughput()
+    elif metric == 'training_utilization':
+        result = evaluator.get_training_wse_utilization()  # with useful debugging info
+    elif metric == 'latency':
+        result = evaluator.get_inference_latency()
     else:
         raise NotImplementedError
     logger.info(f"{metric}: {result}")
+
     return result
 
 def design_space_exploration():
+    """ Try a design point and see if there's any bug.
+    """
+
     df = pd.read_excel(os.path.join(os.path.dirname(os.path.abspath(__file__)), "design_points.xlsx"))
     for i in range(1):
         # test_index = random.randint(0, len(df.index))
