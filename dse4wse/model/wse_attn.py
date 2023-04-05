@@ -518,11 +518,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
 
         if activation_tensor_size > sram_size:
-            raise RuntimeError("Activation cannot be stored on SRAM, you need to allocate more reticle!")
+            raise RuntimeError(f"Activation {activation_tensor_size} cannot be stored on SRAM {sram_size}, you need to allocate more reticle!")
 
         weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
         weight_tensor_numel *= self.num_layer_per_pipeline_stage
-        weight_tensor_size = weight_tensor_numel * self.training_config()
+        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
 
         return activation_tensor_size + weight_tensor_size <= sram_size
@@ -645,7 +645,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         else:
             swap_weight_task_list = []
         compute_task_list = self.__assign_compute_reticle_task(forward)
-        allreduce_task_list = self.__assign_allreduce_reticle_task()
+        allreduce_task_list = self.__assign_allreduce_reticle_task(forward)
 
         task_lists = {
             'input': input_task_list,
@@ -657,7 +657,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         if self.is_overlap:
             if detailed_report:
                 raise NotImplementedError("LP solver hasn't support this feature")
-            task_list = sum(task_lists.values())
+            task_list = sum(task_lists.values(), [])
             wse_task = ListWaferTask(task_list)
             total_latency = self.__run_wse_task(wse_task)
         else:

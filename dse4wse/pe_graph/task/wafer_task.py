@@ -13,8 +13,6 @@ class BaseWaferTask(ABC):
 class ListWaferTask(BaseWaferTask):
     def __init__(self, tasklist: List[BaseReticleTask], **kwargs) -> None:
         super().__init__(**kwargs)
-        for task in tasklist:
-            assert isinstance(task, BaseReticleTask)
         self.data = tasklist
 
     def __iter__(self):
@@ -34,3 +32,6 @@ class ListWaferTask(BaseWaferTask):
     def append(self, value: BaseReticleTask):
         assert isinstance(value, BaseReticleTask)
         self.data.append(value)
+
+    def get_all_virtual_reticle_ids(self) -> List[int]:
+        return sorted(list(set([task.virtual_reticle_id for task in self.data])))
