@@ -617,8 +617,8 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     
     def __assign_allreduce_reticle_task(self, forward: bool):
         tensors = self._op_graph.get_tensors()
-        allreduce_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in (['Z', 'X2_mlp'] if forward else ['X', 'X0_mlp'])])
-        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
+        allreduce_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in (['Z', 'X2_mlp'] if forward else ['X', 'X0_mlp', 'Z', 'X2_mlp'])])
+        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage * 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size
         allreduce_size = allreduce_numel * self.training_config.get_precision_size()
 
         task_list = []
@@ -628,14 +628,51 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             peer_tensor_parallel_index = (tensor_parallel_index + 1) % self.tensor_parallel_size
             peer_parallel_index = (pipeline_stage_index, peer_tensor_parallel_index, worker_reticle_index)
             peer_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[peer_parallel_index]
-            allreduce_task = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', allreduce_size, repeated_times=1)
+            allreduce_task = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', allreduce_size, repeated_times=self.micro_batch_size)
             task_list.append(allreduce_task)
         
         return task_list
     
+    def __run_wse_task(self, wse_task: ListWaferTask) -> float:
+        mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
+        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+        return wse_evaluator.get_total_latency()
     
+    def get_propagation_latency(self, forward=True, detailed_report=False):
+        input_task_list = self.__assign_input_reticle_task(forward)
+        if self.__check_sram_utilization(forward):
+            swap_weight_task_list = self.__assign_swap_weight_reticle_task(forward)
+        else:
+            swap_weight_task_list = []
+        compute_task_list = self.__assign_compute_reticle_task(forward)
+        allreduce_task_list = self.__assign_allreduce_reticle_task()
 
+        task_lists = {
+            'input': input_task_list,
+            'swap_weight': swap_weight_task_list,
+            'compute': compute_task_list,
+            'allreduce': allreduce_task_list,
+        }
 
+        if self.is_overlap:
+            if detailed_report:
+                raise NotImplementedError("LP solver hasn't support this feature")
+            task_list = sum(task_lists.values())
+            wse_task = ListWaferTask(task_list)
+            total_latency = self.__run_wse_task(wse_task)
+        else:
+            raw_report = {}
+            for task_type, task_list in task_lists.items():
+                raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list))
+            final_report = {
+                'compute': raw_report['compute'],
+                'inter_reticle': raw_report['swap_weight'] + raw_report['input'] + raw_report['allreduce'],
+            }
+
+        if detailed_report:
+            return final_report
+        else:
+            return total_latency
 
     def __create_propagation_reticle_task(self, virtual_reticle_id: int, forward: bool) -> FusedReticleTask:
         logger.warning(f"Method {__name__} is deprecated in the future")
@@ -846,10 +883,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                     best_dram_access_amount = dram_access_amount
         return best_split
     
-    def __run_wse_task(self, wse_task: ListWaferTask) -> float:
-        mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
-        return wse_evaluator.get_total_latency()
+    
 
     def __get_forward_propatation_latency(self, store_all_activation=False) -> float:
         """
