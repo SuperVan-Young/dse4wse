@@ -95,7 +95,8 @@ class design_space_construction():
                     core_h += noc_h
                     core_w += noc_w 
 
-                    for core_array_h, core_array_w in product(range(8, 129), range(8, 129)):
+                    # debug, really big step
+                    for core_array_h, core_array_w in product(range(8, 129, 8), range(8, 129, 8)):
                         reticle_h = core_array_h * (core_h + self.core_gap)
                         reticle_w = core_array_w * (core_w + self.core_gap)
                         if reticle_h < (self.reticle_limit_height - self.dojo_overhead) and reticle_w < (self.reticle_limit_width - self.dojo_overhead):
@@ -119,8 +120,9 @@ class design_space_construction():
                             df.loc[len(df.index)] = design_point
                             total_design_points += 1
                             if total_design_points % 1000 == 0:
+                                print(design_point)
+                                print(f"Total design point reaches {total_design_points}")
                                 df.to_excel("design_points.xlsx", index=False)
-                                exit(1)
 
         print(f"#Design_Points = {len(df.index)}")
 

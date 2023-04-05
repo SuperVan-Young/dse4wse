@@ -1,10 +1,11 @@
 
 from math import ceil
 
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple, Union, List
 from itertools import product
 from functools import reduce
 import networkx as nx
+from copy import deepcopy
 
 from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
 from dse4wse.op_graph.op import BaseOperator, MatMulOperator
@@ -47,6 +48,7 @@ class WseTransformerRunner():
                  zero_dp_p: bool = False,
                  zero_r_pa: bool = True,
                  num_reticle_per_pipeline_stage: int = 1,
+                 **kwargs,
                  ) -> None:
         # model parameters
         self.attention_heads = attention_heads
@@ -461,8 +463,17 @@ class WseTransformerRunner():
 
     
 class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
+    """ Estimate WSE performance with higher fidelity
+    Propagation latency now considers more inter-reticle transmission features: 
+    - Traffic induced by accessing DRAM
+    - Congestion in allreduce induced by inappropiate mapping
+    - Overlapping computation and inter-reticle communication
+
+    TODO: All I need to write is get_propagation_latency
+    """
+
     def __init__(self, 
-                 attention_heads: int,
+                 attention_heads: int, 
                  hidden_size: int, 
                  sequence_length: int, 
                  number_of_layers: int, 
@@ -473,17 +484,103 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                  tensor_parallel_size: int, 
                  wafer_scale_engine: WaferScaleEngine, 
                  training_config: TrainingConfig, 
-                 inter_wafer_bandwidth: Union[int, None] = None,
+                 inter_wafer_bandwidth: Union[int, None] = None, 
                  zero_dp_os: bool = True, 
                  zero_dp_g: bool = True, 
                  zero_dp_p: bool = False, 
-                 zero_r_pa: bool = True
+                 zero_r_pa: bool = True, 
+                 num_reticle_per_pipeline_stage: int = 1,
+                 **kwargs,
                  ) -> None:
-        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa)
-        assert self.zero_dp_p == False, "Each wafer must hold a full copy of weight"
-        assert tensor_parallel_size <= wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width, "Cannot tensor parallel on a tiny wafer!"
-        self.virtual_reticle_id_2_parallel_index = {i: (t, m) for i, (t, m) in enumerate(product(range(tensor_parallel_size), range(self.num_pipeline_stage_per_wafer)))}
-        self.parallel_index_2_virtual_reticle_id = {(t, m): i for i, (t, m) in enumerate(product(range(tensor_parallel_size), range(self.num_pipeline_stage_per_wafer)))}
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage)
+        self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
+        self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
+        self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
+        self.__virtual_dram_port_counter = 0
+
+    def __check_sram_utilization(self, forward=False) -> bool:
+        """ Check if single tensor parallel worker can store activation & weight on chip.
+        Args:
+            @param forward: backward need to store activation's grad on chip
+        Returns:
+            if weight need to be swapped for every new input
+        Raises:
+            - RuntimeError: activation cannot be stored on chip
+        """
+        tensors = self._op_graph.get_tensors()
+        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_pipeline_stage
+
+        # for simplicity, we assume that we use feed 1 sequence at a time
+        # if in this case, weight cannot stay on chip, it's just too bad.
+        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
+        activation_tensor_numel = activation_tensor_numel / self.micro_batch_size * self.num_layer_per_pipeline_stage
+        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
+        activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
+
+        if activation_tensor_size > sram_size:
+            raise RuntimeError("Activation cannot be stored on SRAM, you need to allocate more reticle!")
+
+        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
+        weight_tensor_numel *= self.num_layer_per_pipeline_stage
+        weight_tensor_size = weight_tensor_numel * self.training_config()
+        weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
+
+        return activation_tensor_size + weight_tensor_size <= sram_size
+    
+    def __alloc_new_dram_port(self):
+        vdp = deepcopy(self.__virtual_dram_port_counter)
+        self.__virtual_dram_port_counter += 1
+        return vdp
+    
+    def __assign_input_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+        """ Reticle tasks for input
+        """
+
+        # activation size of 1 sequence input
+        tensors = self._op_graph.get_tensors()
+        input_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X']])
+        input_tensor_numel = input_tensor_numel / self.micro_batch_size
+        input_tensor_size = input_tensor_numel * self.training_config.get_precision_size()
+
+        def need_to_access_dram(worker_reticle_index) -> bool:
+            if forward:
+                return worker_reticle_index == 0
+            else:
+                return worker_reticle_index == self.num_reticle_per_pipeline_stage - 1
+
+        task_list = []
+
+        for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
+            pipeline_stage_index, tensor_parallel_index, worker_reticle_index = parallel_index
+            if need_to_access_dram(worker_reticle_index=worker_reticle_index):  # need to fetch input from DRAM
+                if tensor_parallel_index == 0:  # only the first worker access DRAM
+                    virtual_dram_port = self.__alloc_new_dram_port()
+                    reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
+                    task_list.append(reticle_task)
+                else:  # other workers fetch from their peers, forming a binary tree
+                    pred_tensor_parallel_index = tensor_parallel_index // 2
+                    pred_parallel_index = (pipeline_stage_index, pred_tensor_parallel_index, worker_reticle_index)
+                    pred_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[pred_parallel_index]
+                    reticle_task = PeerAccessReticleTask(virtual_reticle_id, pred_virtual_reticle_id, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
+                    task_list.append(reticle_task)
+            else:  # other workers uses predcessor's activation
+                pred_shift = -1 if forward else 1
+                pred_worker_reticle_index = worker_reticle_index + pred_shift
+                pred_parallel_index = (pipeline_stage_index, tensor_parallel_index, pred_worker_reticle_index)
+                pred_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[pred_parallel_index]
+                reticle_task = PeerAccessReticleTask(virtual_reticle_id, pred_virtual_reticle_id, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
+                task_list.append(reticle_task)
+
+        # rematerialization input tasks
+        if forward is False:
+            task_list += self.__assign_input_reticle_task(forward=True)
+
+        return task_list
+    
+    def __assign_compute_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+        
+
+        
 
     def __create_propagation_reticle_task(self, virtual_reticle_id: int, forward: bool) -> FusedReticleTask:
         logger.warning(f"Method {__name__} is deprecated in the future")
