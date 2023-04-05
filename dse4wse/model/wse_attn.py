@@ -577,10 +577,29 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
 
         return task_list
     
-    def __assign_compute_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+    def __assign_swap_weight_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+        if self.__check_sram_utilization(forward):
+            return []
         
+        # weight size for one reticle
+        # this split is very naive, and may not lead to a valid split
+        tensors = self._op_graph.get_tensors()
+        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
+        weight_tensor_numel = weight_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
+        weight_tensor_size = weight_tensor_numel * self.training_config()
+        
+        task_list = []
 
-        
+        for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
+            virtual_dram_port = self.__alloc_new_dram_port()
+            fp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', weight_tensor_size, repeated_times=self.micro_batch_size)
+            task_list.append(fp_reticle_task)
+            if not forward:
+                bp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', weight_tensor_size, repeated_times=self.micro_batch_size)
+                task_list.append(fp_reticle_task)
+
+        return task_list            
+
 
     def __create_propagation_reticle_task(self, virtual_reticle_id: int, forward: bool) -> FusedReticleTask:
         logger.warning(f"Method {__name__} is deprecated in the future")
