@@ -586,7 +586,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         tensors = self._op_graph.get_tensors()
         weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
         weight_tensor_numel = weight_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
-        weight_tensor_size = weight_tensor_numel * self.training_config()
+        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         
         task_list = []
 
@@ -595,10 +595,46 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             fp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', weight_tensor_size, repeated_times=self.micro_batch_size)
             task_list.append(fp_reticle_task)
             if not forward:
+                # write grad back to DRAM
                 bp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', weight_tensor_size, repeated_times=self.micro_batch_size)
-                task_list.append(fp_reticle_task)
+                task_list.append(bp_reticle_task)
 
-        return task_list            
+        return task_list
+
+    def __assign_compute_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+        # compute size for one reticle
+        compute_amount = sum([op.get_fp_mac_count() if forward else op.get_bp_mac_count() + op.get_fp_mac_count() 
+                              for name, op in self._op_graph.nodes(data='operator')]) / self.micro_batch_size
+        compute_amount = compute_amount * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
+
+        task_list = []
+
+        for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
+            compute_task = ComputeReticleTask(virtual_reticle_id, compute_amount, repeated_times=self.micro_batch_size)
+            task_list.append(compute_task)
+        
+        return task_list
+    
+    def __assign_allreduce_reticle_task(self, forward: bool):
+        tensors = self._op_graph.get_tensors()
+        allreduce_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in (['Z', 'X2_mlp'] if forward else ['X', 'X0_mlp'])])
+        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
+        allreduce_size = allreduce_numel * self.training_config.get_precision_size()
+
+        task_list = []
+        
+        for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
+            pipeline_stage_index, tensor_parallel_index, worker_reticle_index = parallel_index
+            peer_tensor_parallel_index = (tensor_parallel_index + 1) % self.tensor_parallel_size
+            peer_parallel_index = (pipeline_stage_index, peer_tensor_parallel_index, worker_reticle_index)
+            peer_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[peer_parallel_index]
+            allreduce_task = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', allreduce_size, repeated_times=1)
+            task_list.append(allreduce_task)
+        
+        return task_list
+    
+    
+
 
 
     def __create_propagation_reticle_task(self, virtual_reticle_id: int, forward: bool) -> FusedReticleTask:
