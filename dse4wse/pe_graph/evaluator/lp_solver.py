@@ -113,27 +113,27 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         def add_compute_constraint(ndata):
             reticle_compute_power = self.hardware.reticle_compute_power
             A_ub_ = np.zeros(num_variables)
-            b_ub_ = np.ones(1) * reticle_compute_power
+            b_ub_ = np.ones(1)
             for var, data_amount in ndata['compute_mark'].items():
-                A_ub_[var] = data_amount
+                A_ub_[var] = data_amount / reticle_compute_power
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 
         def add_transmission_constraint(edata):
             inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
             A_ub_ = np.zeros(num_variables)
-            b_ub_ = np.ones(1) * inter_reticle_bandwidth
+            b_ub_ = np.ones(1)
             for var, data_amount in edata['transmission_mark'].items():
-                A_ub_[var] = data_amount
+                A_ub_[var] = data_amount / inter_reticle_bandwidth
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 
         def add_dram_access_constraint(ndata):
             dram_bandwidth = self.hardware.dram_bandwidth
             A_ub_ = np.zeros(num_variables)
-            b_ub_ = np.ones(1) * dram_bandwidth
+            b_ub_ = np.ones(1)
             for var, data_amount in ndata['dram_access_mark'].items():
-                A_ub_[var] = data_amount
+                A_ub_[var] = data_amount / dram_bandwidth
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 
@@ -142,7 +142,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             A_ub_ = np.zeros(num_variables)
             A_ub_[global_freq_index] = 1
             A_ub_[var] = -1
-            b_ub_ = np.ones(1)
+            b_ub_ = np.zeros(1)
             A_ub.append(A_ub_)
             b_ub.append(b_ub_)
 

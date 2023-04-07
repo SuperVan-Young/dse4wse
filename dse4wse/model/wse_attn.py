@@ -683,7 +683,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
             total_latency = wse_evaluator.get_total_latency()
             if detailed_report:
-                util_report = wse_evaluator.profile_utilization()
+                util_report = wse_evaluator.profile_utilization(per_module=True)
                 final_report = {
                     'compute': util_report['compute'] * total_latency,
                     'inter_reticle': util_report['inter_reticle'] * total_latency,
