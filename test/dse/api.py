@@ -135,11 +135,11 @@ def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='tr
 def design_space_exploration():
     """ Try a design point and see if there's any bug.
     """
-
     df = pd.read_excel(os.path.join(os.path.dirname(os.path.abspath(__file__)), "design_points.xlsx"))
-    for i in range(1):
-        # test_index = random.randint(0, len(df.index))
-        test_index = 630
+    random.seed(42)
+
+    for i in range(10):
+        test_index = random.randint(0, len(df.index))
         test_design_point = df.loc[test_index].to_dict()
         test_model_parameters = {
             "attention_heads": 96,
@@ -147,9 +147,10 @@ def design_space_exploration():
             "sequence_length": 2048,
             "number_of_layers": 160,
             "mini_batch_size": 3072,
-            "tensor_parallel_size": 4,
-            "model_parallel_size": 160,
-            "num_reticle_per_pipeline_stage": 60,
+            "micro_batch_size": 32,
+            "tensor_parallel_size": 8,
+            "model_parallel_size": 80,
+            "num_reticle_per_pipeline_stage": 1,
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 
