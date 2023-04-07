@@ -495,7 +495,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage)
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
-        self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
+        self.is_overlap = False  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
 
     def __check_sram_utilization(self, forward=False) -> bool:
@@ -524,15 +524,16 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
         activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
 
-        if activation_tensor_size > sram_size:
-            return True, True
-
         weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
         weight_tensor_numel *= self.num_layer_per_pipeline_stage
         weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
 
-        return (activation_tensor_size + weight_tensor_size <= sram_size), False
+        # logger.info(f"weight size: {int(weight_tensor_size/1e6)} MB, activation size: {int(activation_tensor_size/1e6)} MB, SRAM size: {int(sram_size/1e6)} MB")
+        if activation_tensor_size > sram_size:
+            return True, True
+
+        return (activation_tensor_size + weight_tensor_size > sram_size), False
     
     def __alloc_new_dram_port(self):
         vdp = deepcopy(self.__virtual_dram_port_counter)
@@ -565,7 +566,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                     reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
                     task_list.append(reticle_task)
                 else:  # other workers fetch from their peers, forming a binary tree
-                    pred_tensor_parallel_index = tensor_parallel_index // 2
+                    pred_tensor_parallel_index = tensor_parallel_index - 1  # but that would make transmission overlap, and we simply assumes 100% bandwidth utilization
                     pred_parallel_index = (pipeline_stage_index, pred_tensor_parallel_index, worker_reticle_index)
                     pred_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[pred_parallel_index]
                     reticle_task = PeerAccessReticleTask(virtual_reticle_id, pred_virtual_reticle_id, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
@@ -667,7 +668,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         swap_weight_task_list = self.__assign_swap_weight_reticle_task(forward) if need_to_swap_weight else []
         swap_activation_task_list = self.__assign_swap_activation_reticle_task(forward) if need_to_swap_activation else []
         compute_task_list = self.__assign_compute_reticle_task(forward)
-        allreduce_task_list = self.__assign_allreduce_reticle_task(forward)
+        allreduce_task_list = self.__assign_allreduce_reticle_task(forward) if self.tensor_parallel_size != 1 else []
 
         task_lists = {
             'input': input_task_list,
@@ -692,7 +693,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         else:
             raw_report = {}
             for task_type, task_list in task_lists.items():
-                raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list))
+                raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list)) if task_list else 0
             final_report = {
                 'compute': raw_report['compute'],
                 'inter_reticle': raw_report['swap_weight'] + raw_report['swap_activation'] + raw_report['input'] + raw_report['allreduce'],
