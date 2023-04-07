@@ -500,12 +500,19 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
 
     def __check_sram_utilization(self, forward=False) -> bool:
         """ Check if single tensor parallel worker can store activation & weight on chip.
+        For simplicity, if weight need to be swapped, we only read it once.
+        If activation need to be swapped, we store it once and load it once.
+        This is the minimum amount of transmission on DRAM ports.
+        We also don't care about real tiling strategies and real SRAM utilization.
+        
+        Indeed, this isn't very precise, but I do have a more precise version banned
+        due to its lack of core-level transmission complexity, so what can I say?
+
         Args:
             @param forward: backward need to store activation's grad on chip
         Returns:
             if weight need to be swapped for every new input
-        Raises:
-            - RuntimeError: activation cannot be stored on chip
+            and if activation need to be stored on DRAM
         """
         tensors = self._op_graph.get_tensors()
         sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_pipeline_stage
@@ -518,14 +525,14 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
 
         if activation_tensor_size > sram_size:
-            raise RuntimeError(f"Activation {activation_tensor_size} cannot be stored on SRAM {sram_size}, you need to allocate more reticle!")
+            return False, False
 
         weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
         weight_tensor_numel *= self.num_layer_per_pipeline_stage
         weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
 
-        return activation_tensor_size + weight_tensor_size <= sram_size
+        return (activation_tensor_size + weight_tensor_size <= sram_size), True
     
     def __alloc_new_dram_port(self):
         vdp = deepcopy(self.__virtual_dram_port_counter)
@@ -578,9 +585,6 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         return task_list
     
     def __assign_swap_weight_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
-        if self.__check_sram_utilization(forward):
-            return []
-        
         # weight size for one reticle
         # this split is very naive, and may not lead to a valid split
         tensors = self._op_graph.get_tensors()
@@ -598,6 +602,24 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                 # write grad back to DRAM
                 bp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', weight_tensor_size, repeated_times=self.micro_batch_size)
                 task_list.append(bp_reticle_task)
+
+        return task_list
+    
+    def __assign_swap_activation_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+        tensors = self._op_graph.get_tensors()
+        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
+        activation_tensor_numel = activation_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage / self.micro_batch_size
+        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
+        activation_tensor_size = activation_tensor_size * 2 if not forward else activation_tensor_size 
+
+        task_list = []
+
+        for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
+            virtual_dram_port = self.__alloc_new_dram_port()
+            write_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', activation_tensor_size, repeated_times=self.micro_batch_size)
+            read_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', activation_tensor_size, repeated_times=self.micro_batch_size)
+            task_list.append(read_reticle_task)
+            task_list.append(write_reticle_task)
 
         return task_list
 
@@ -640,16 +662,16 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     
     def get_propagation_latency(self, forward=True, detailed_report=False):
         input_task_list = self.__assign_input_reticle_task(forward)
-        if self.__check_sram_utilization(forward):
-            swap_weight_task_list = self.__assign_swap_weight_reticle_task(forward)
-        else:
-            swap_weight_task_list = []
+        need_to_swap_weight, need_to_swap_activation = self.__check_sram_utilization(forward)
+        swap_weight_task_list = self.__assign_swap_weight_reticle_task(forward) if need_to_swap_weight else []
+        swap_activation_task_list = self.__assign_swap_activation_reticle_task(forward) if need_to_swap_activation else []
         compute_task_list = self.__assign_compute_reticle_task(forward)
         allreduce_task_list = self.__assign_allreduce_reticle_task(forward)
 
         task_lists = {
             'input': input_task_list,
             'swap_weight': swap_weight_task_list,
+            'swap_activation': swap_activation_task_list,
             'compute': compute_task_list,
             'allreduce': allreduce_task_list,
         }
