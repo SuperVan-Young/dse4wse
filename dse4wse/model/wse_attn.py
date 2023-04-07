@@ -525,14 +525,14 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
 
         if activation_tensor_size > sram_size:
-            return False, False
+            return True, True
 
         weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
         weight_tensor_numel *= self.num_layer_per_pipeline_stage
         weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
 
-        return (activation_tensor_size + weight_tensor_size <= sram_size), True
+        return (activation_tensor_size + weight_tensor_size <= sram_size), False
     
     def __alloc_new_dram_port(self):
         vdp = deepcopy(self.__virtual_dram_port_counter)
@@ -640,7 +640,8 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     def __assign_allreduce_reticle_task(self, forward: bool):
         tensors = self._op_graph.get_tensors()
         allreduce_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in (['Z', 'X2_mlp'] if forward else ['X', 'X0_mlp', 'Z', 'X2_mlp'])])
-        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage * 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size
+        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage / self.micro_batch_size
+        allreduce_numel = allreduce_numel * 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size
         allreduce_size = allreduce_numel * self.training_config.get_precision_size()
 
         task_list = []
@@ -683,7 +684,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
             total_latency = wse_evaluator.get_total_latency()
             if detailed_report:
-                util_report = wse_evaluator.profile_utilization(per_module=True)
+                util_report = wse_evaluator.profile_utilization()
                 final_report = {
                     'compute': util_report['compute'] * total_latency,
                     'inter_reticle': util_report['inter_reticle'] * total_latency,
@@ -694,8 +695,10 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                 raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list))
             final_report = {
                 'compute': raw_report['compute'],
-                'inter_reticle': raw_report['swap_weight'] + raw_report['input'] + raw_report['allreduce'],
+                'inter_reticle': raw_report['swap_weight'] + raw_report['swap_activation'] + raw_report['input'] + raw_report['allreduce'],
             }
+            logger.debug(raw_report)  # in non-overlapping model, you can see latency of each part
+            total_latency = sum(raw_report.values(), 0)
 
         if detailed_report:
             return final_report

@@ -39,30 +39,39 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # get annotated graph (directly use a graph copy for agile impl)
         G = deepcopy(self.hardware._reticle_graph)
         for node, ndata in G.nodes(data=True):
-            ndata['compute_mark'] = {i: 0 for i in range(len(self.vrid_2_var))}
-            ndata['dram_access_mark'] = {i: 0 for i in range(len(self.vrid_2_var))}
+            ndata['compute_mark'] = {}
+            ndata['dram_access_mark'] = {}
         for u, v, edata in G.edges(data=True):
-            edata['transmission_mark'] = {i: 0 for i in range(len(self.vrid_2_var))}
+            edata['transmission_mark'] = {}
 
         def add_compute_task(task: ComputeReticleTask):
             vrid = task.virtual_reticle_id
             prid = self.mapper.find_physical_reticle_coordinate(vrid)
             ndata = G.nodes[prid]
-            ndata['compute_mark'][self.vrid_2_var[vrid]] += task.compute_amount
+            if self.vrid_2_var[vrid] not in ndata['compute_mark']:
+                ndata['compute_mark'][self.vrid_2_var[vrid]] = task.compute_amount
+            else:
+                ndata['compute_mark'][self.vrid_2_var[vrid]] += task.compute_amount
 
         def add_dram_access_task(task: DramAccessReticleTask):
             vrid = task.virtual_reticle_id
             prid = self.mapper.find_physical_reticle_coordinate(vrid)
             pdpid = self.mapper.find_physical_dram_port_coordinate(task.virtual_dram_port)
             ndata = G.nodes[pdpid]
-            ndata['dram_access_mark'][self.vrid_2_var[vrid]] += task.data_amount
+            if self.vrid_2_var[vrid] not in ndata['dram_access_mark']:
+                ndata['dram_access_mark'][self.vrid_2_var[vrid]] = task.data_amount
+            else:
+                ndata['dram_access_mark'][self.vrid_2_var[vrid]] += task.data_amount
 
             routing_func = self.mapper.find_read_dram_routing_path \
                            if task.access_type == 'read' else self.mapper.find_write_dram_routing_path
             link_list = routing_func(prid, pdpid)
             for link in link_list:
                 edata = G.edges[link]
-                edata['transmission_mark'][self.vrid_2_var[vrid]] += task.data_amount
+                if self.vrid_2_var[vrid] not in edata['transmission_mark']:
+                    edata['transmission_mark'][self.vrid_2_var[vrid]] = task.data_amount
+                else:
+                    edata['transmission_mark'][self.vrid_2_var[vrid]] += task.data_amount
 
         def add_peer_access_task(task: PeerAccessReticleTask):
             vrid = task.virtual_reticle_id
@@ -73,7 +82,10 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             link_list = routing_func(prid, peer_prid)
             for link in link_list:
                 edata = G.edges[link]
-                edata['transmission_mark'][self.vrid_2_var[vrid]] += task.data_amount
+                if self.vrid_2_var[vrid] not in edata['transmission_mark']:
+                    edata['transmission_mark'][self.vrid_2_var[vrid]] = task.data_amount
+                else:
+                    edata['transmission_mark'][self.vrid_2_var[vrid]] += task.data_amount
 
         def add_task(task: BaseReticleTask):
             if isinstance(task, ComputeReticleTask):
