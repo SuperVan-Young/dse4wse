@@ -13,8 +13,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from dse4wse.model.wse_attn import WseTransformerRunner
-# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+# from dse4wse.model.wse_attn import WseTransformerRunner
+from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 

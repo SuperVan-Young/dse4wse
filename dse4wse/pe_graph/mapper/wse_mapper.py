@@ -13,7 +13,7 @@ LinkList = List[Link]
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import ListWaferTask
 
-from .reticle_mapper import BaseReticleMapper, XYReticleMapper
+from .reticle_mapper import BaseReticleMapper, XYReticleMapper, ZigZagReticleMapper
 from .dram_port_mapper import BaseDramPortMapper, HashDramPortMapper, NearestDramPortMapper
 from .reticle_router import BaseReticleRouter, XYReticleRouter
 
@@ -62,7 +62,7 @@ def get_default_mapper(wse: WaferScaleEngine, task: ListWaferTask):
         'reticle_array_height': wse.reticle_array_height,
         'reticle_array_width': wse.reticle_array_width,
     }
-    reticle_mapper = XYReticleMapper(**reticle_mapper_config)
+    reticle_mapper = ZigZagReticleMapper(**reticle_mapper_config)
 
     dram_port_mapper_config = {
         'wafer_scale_engine': wse,
