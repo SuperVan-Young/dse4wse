@@ -286,20 +286,60 @@ class WseTransformerRunner():
 
         return total_latency 
 
-    def _get_weight_update_latency(self) -> float:
-        """ This is completely transmission-bottlenecked, so we only consider allreduce latency between data parallel workers
+    def _get_bisection_bandwidth(self) -> int:
+        return 2 * (self.wafer_scale_engine.reticle_array_height + self.wafer_scale_engine.reticle_array_width) * self.wafer_scale_engine.inter_reticle_bandwidth
+    
+    
+    def _get_input_latency(self, forward: bool) -> float:
+        tensors = self._op_graph.get_tensors()
+        input_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X']])
+        input_tensor_numel = (2 * input_tensor_numel) if not forward else input_tensor_numel  # rematerialization
+
+        dram_access_size = input_tensor_numel * self.training_config.get_precision_size()
+        dram_access_latency = dram_access_size / self.wafer_scale_engine.dram_bandwidth
+
+        inter_reticle_size = input_tensor_numel * self.training_config.get_precision_size() * (self.tensor_parallel_size - 1) * self.num_pipeline_stage_per_wafer
+        bisection_bandwidth = self._get_bisection_bandwidth()
+        inter_reticle_latency = inter_reticle_size / bisection_bandwidth
+
+        return dram_access_latency + inter_reticle_latency
+    
+    def _get_swap_weight_latency(self, forward: bool) -> float:
         """
-        inter_wafer_bandwidth = self.inter_wafer_bandwidth
+        Estimation on swapping weight in and out of DRAM.
+        Weight need to be loaded for every sequence.
+        We only consider tranmission is bounded by on-chip reticle network
+        """
+        tensors = self._op_graph.get_tensors()
+        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
+        weight_tensor_numel = weight_tensor_numel * self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # on the wafer
+        weight_tensor_numel = weight_tensor_numel * self.micro_batch_size  # swapped times
+        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
+        weight_tensor_size = (2 * weight_tensor_size) if not forward else weight_tensor_size  # read weight & write grad
 
-        weight_tensors = self._op_graph.get_tensors(kind=['weight'])
-        weight_tensor_total_numel = sum([tensor.numel() for tensor in weight_tensors.values()])
-        weight_tensor_total_numel *= self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # total shares on wafer
+        bisection_bandwidth = self._get_bisection_bandwidth()
+        return weight_tensor_size / bisection_bandwidth
+    
+    def _get_swap_activation_latency(self, forward: bool) -> float:
+        """
+        Estimation on swapping activation in and out of DRAM.
+        """
+        tensors = self._op_graph.get_tensors()
+        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
+        activation_tensor_numel = activation_tensor_numel * self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # on the wafer
+        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
+        activation_tensor_size = activation_tensor_size * 2  # 1 read + 1 write
+        activation_tensor_size = activation_tensor_size * 2 if not forward else activation_tensor_size  # activation + grad
 
-        # reduce scatter 1 share of grad and all gather 1 share of weight
-        weight_size = grad_size =  weight_tensor_total_numel * self.training_config.get_precision_size()
-        comm_volume = weight_size + grad_size
-        return comm_volume / inter_wafer_bandwidth
-        
+        bisection_bandwidth = self._get_bisection_bandwidth()
+        return activation_tensor_size / bisection_bandwidth
+    
+    def _get_compute_latency(self, forward: bool) -> float:
+        if forward:
+            return self._get_ideal_compute_latency(forward)
+        else:
+            return self._get_ideal_compute_latency(True) + self._get_ideal_compute_latency(False)
+    
     def _get_activation_allreduce_latency(self, forward: bool) -> float:
         """
         Estimation on collective communication latency of #tensor_parallel_size reticles
@@ -314,12 +354,26 @@ class WseTransformerRunner():
         if forward:
             allreduce_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['Z', 'X2_mlp']])
         else:
-            allreduce_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['X', 'X0_mlp']])
+            allreduce_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['X', 'X0_mlp', 'Z', 'X2_mlp']]) # rematerialization
         
         allreduce_size *= self.num_layer_per_pipeline_stage # 1 share of activation of a pipeline stage
         # needless to consider for zero_dp_p
         allreduce_latency = 2 * (T-1) / T * allreduce_size / allreduce_bandwidth
         return allreduce_latency
+
+    def _get_weight_update_latency(self) -> float:
+        """ This is completely transmission-bottlenecked, so we only consider allreduce latency between data parallel workers
+        """
+        inter_wafer_bandwidth = self.inter_wafer_bandwidth
+
+        weight_tensors = self._op_graph.get_tensors(kind=['weight'])
+        weight_tensor_total_numel = sum([tensor.numel() for tensor in weight_tensors.values()])
+        weight_tensor_total_numel *= self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # total shares on wafer
+
+        # reduce scatter 1 share of grad and all gather 1 share of weight
+        weight_size = grad_size =  weight_tensor_total_numel * self.training_config.get_precision_size()
+        comm_volume = weight_size + grad_size
+        return comm_volume / inter_wafer_bandwidth
     
     def _get_activation_cross_pipeline_stage_latency(self, forward=True, connect_type='wafer'):
         bandwidth = None
@@ -339,21 +393,59 @@ class WseTransformerRunner():
         comm_latency = comm_size / bandwidth
         return comm_latency
     
+    def get_sram_utilization(self, forward=False) -> bool:
+        """ Check if single tensor parallel worker can store activation & weight on chip.
+        For simplicity, if weight need to be swapped, we only read it once.
+        If activation need to be swapped, we store it once and load it once.
+        This is the minimum amount of transmission on DRAM ports.
+        We also don't care about real tiling strategies and real SRAM utilization.
+        
+        Indeed, this isn't very precise, but I do have a more precise version banned
+        due to its lack of core-level transmission complexity, so what can I say?
+
+        Args:
+            @param forward: backward need to store activation's grad on chip
+        Returns:
+            if weight need to be swapped for every new input
+            and if activation need to be stored on DRAM
+        """
+        tensors = self._op_graph.get_tensors()
+        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_pipeline_stage
+
+        # for simplicity, we assume that we use feed 1 sequence at a time
+        # if in this case, weight cannot stay on chip, it's just too bad.
+        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
+        activation_tensor_numel = activation_tensor_numel / self.micro_batch_size * self.num_layer_per_pipeline_stage
+        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
+        activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
+
+        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
+        weight_tensor_numel *= self.num_layer_per_pipeline_stage
+        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
+        weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
+
+        # logger.info(f"weight size: {int(weight_tensor_size/1e6)} MB, activation size: {int(activation_tensor_size/1e6)} MB, SRAM size: {int(sram_size/1e6)} MB")
+        if activation_tensor_size > sram_size:
+            return True, True
+
+        return (activation_tensor_size + weight_tensor_size > sram_size), False
+    
     def get_propagation_latency(self, forward=True, detailed_report=False):
         """ Only consider events WITHIN a reticle.
         Naive version doesn't consider overlapping, but lp_solver version does
         """
-        compute_latency = self._get_ideal_compute_latency(forward=True)
-        activation_allreduce_latency = self._get_activation_allreduce_latency(forward=True)
-        if forward is False:
-            compute_latency += self._get_ideal_compute_latency(forward=False)
-            activation_allreduce_latency += self._get_activation_allreduce_latency(forward=False)
+        need_to_swap_weight, need_to_swap_activation = self.get_sram_utilization(forward)
+        input_latency = self._get_input_latency(forward=forward)
+        swap_weight_latency = self._get_swap_weight_latency(forward=forward) if need_to_swap_weight else 0 
+        swap_activation_latency = self._get_swap_activation_latency(forward=forward) if need_to_swap_activation else 0 
+        compute_latency = self._get_compute_latency(forward=forward)
+        activation_allreduce_latency = self._get_activation_allreduce_latency(forward=forward)
 
-        total_latency = compute_latency + activation_allreduce_latency
+        total_latency = compute_latency + activation_allreduce_latency + swap_weight_latency + swap_activation_latency + input_latency
         if detailed_report:
             return {
                 'compute': compute_latency,
-                'inter_reticle': activation_allreduce_latency,
+                'inter_reticle': input_latency + activation_allreduce_latency + swap_weight_latency + swap_activation_latency,
             }
         else:
             return total_latency
@@ -414,9 +506,9 @@ class WseTransformerRunner():
         single_stage_fp_latency = self.get_propagation_latency(forward=True) + self._get_activation_cross_pipeline_stage_latency(connect_type='wafer')
         single_stage_bp_latency = self.get_propagation_latency(forward=False) + self._get_activation_cross_pipeline_stage_latency(connect_type='wafer')
         weight_comm_latency = self._get_weight_update_latency() 
-        pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
+        pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size / self.data_parallel_size)
         whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency) + weight_comm_latency
-        sequence_per_sec = self.mini_batch_size / whole_batch_latency
+        sequence_per_sec = (self.mini_batch_size / self.data_parallel_size) / whole_batch_latency
 
         return sequence_per_sec
 
@@ -426,7 +518,7 @@ class WseTransformerRunner():
         single_stage_fp_latency = self.get_propagation_latency(forward=True) + self._get_activation_cross_pipeline_stage_latency(connect_type='wafer')
         single_stage_bp_latency = self.get_propagation_latency(forward=False) + self._get_activation_cross_pipeline_stage_latency(connect_type='wafer')
         weight_update_latency = self._get_weight_update_latency() 
-        pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size)
+        pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size / self.data_parallel_size)
         whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency) + weight_update_latency
 
         ideal_compute_latency = self._get_ideal_compute_latency(forward=True) * 2 + self._get_ideal_compute_latency(forward=False)
@@ -495,44 +587,8 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage)
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
-        self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
+        self.is_overlap = False  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
-
-    def __check_sram_utilization(self, forward=False) -> bool:
-        """ Check if single tensor parallel worker can store activation & weight on chip.
-        For simplicity, if weight need to be swapped, we only read it once.
-        If activation need to be swapped, we store it once and load it once.
-        This is the minimum amount of transmission on DRAM ports.
-        We also don't care about real tiling strategies and real SRAM utilization.
-        
-        Indeed, this isn't very precise, but I do have a more precise version banned
-        due to its lack of core-level transmission complexity, so what can I say?
-
-        Args:
-            @param forward: backward need to store activation's grad on chip
-        Returns:
-            if weight need to be swapped for every new input
-            and if activation need to be stored on DRAM
-        """
-        tensors = self._op_graph.get_tensors()
-        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_pipeline_stage
-
-        # for simplicity, we assume that we use feed 1 sequence at a time
-        # if in this case, weight cannot stay on chip, it's just too bad.
-        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
-        activation_tensor_numel = activation_tensor_numel / self.micro_batch_size * self.num_layer_per_pipeline_stage
-        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
-        activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
-
-        if activation_tensor_size > sram_size:
-            return True, True
-
-        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
-        weight_tensor_numel *= self.num_layer_per_pipeline_stage
-        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
-        weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
-
-        return (activation_tensor_size + weight_tensor_size <= sram_size), False
     
     def __alloc_new_dram_port(self):
         vdp = deepcopy(self.__virtual_dram_port_counter)
@@ -565,7 +621,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                     reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
                     task_list.append(reticle_task)
                 else:  # other workers fetch from their peers, forming a binary tree
-                    pred_tensor_parallel_index = tensor_parallel_index // 2
+                    pred_tensor_parallel_index = tensor_parallel_index - 1  # but that would make transmission overlap, and we simply assumes 100% bandwidth utilization
                     pred_parallel_index = (pipeline_stage_index, pred_tensor_parallel_index, worker_reticle_index)
                     pred_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[pred_parallel_index]
                     reticle_task = PeerAccessReticleTask(virtual_reticle_id, pred_virtual_reticle_id, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
@@ -663,11 +719,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     
     def get_propagation_latency(self, forward=True, detailed_report=False):
         input_task_list = self.__assign_input_reticle_task(forward)
-        need_to_swap_weight, need_to_swap_activation = self.__check_sram_utilization(forward)
+        need_to_swap_weight, need_to_swap_activation = self.get_sram_utilization(forward)
         swap_weight_task_list = self.__assign_swap_weight_reticle_task(forward) if need_to_swap_weight else []
         swap_activation_task_list = self.__assign_swap_activation_reticle_task(forward) if need_to_swap_activation else []
         compute_task_list = self.__assign_compute_reticle_task(forward)
-        allreduce_task_list = self.__assign_allreduce_reticle_task(forward)
+        allreduce_task_list = self.__assign_allreduce_reticle_task(forward) if self.tensor_parallel_size != 1 else []
 
         task_lists = {
             'input': input_task_list,
@@ -692,7 +748,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         else:
             raw_report = {}
             for task_type, task_list in task_lists.items():
-                raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list))
+                raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list)) if task_list else 0
             final_report = {
                 'compute': raw_report['compute'],
                 'inter_reticle': raw_report['swap_weight'] + raw_report['swap_activation'] + raw_report['input'] + raw_report['allreduce'],

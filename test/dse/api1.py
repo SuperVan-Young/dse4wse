@@ -109,7 +109,7 @@ def nohup_decorator(func):
             return np.inf
     return wrapper
 
-@nohup_decorator
+# @nohup_decorator
 def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization'):
     """ Evaluator API for DSE framework. 
     """
@@ -142,14 +142,14 @@ def design_space_exploration():
         test_index = random.randint(0, len(df.index))
         test_design_point = df.loc[test_index].to_dict()
         test_model_parameters = {
-            "attention_heads": 96,
-            "hidden_size": 12288,
-            "sequence_length": 2048,
-            "number_of_layers": 160,
-            "mini_batch_size": 3072,
+            "attention_heads": 12,
+            "hidden_size": 768,
+            "sequence_length": 512,
+            "number_of_layers": 24,
+            "mini_batch_size": 512,
             "micro_batch_size": 32,
-            "tensor_parallel_size": 8,
-            "model_parallel_size": 80,
+            "tensor_parallel_size": 1,
+            "model_parallel_size": 24,
             "num_reticle_per_pipeline_stage": 1,
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
