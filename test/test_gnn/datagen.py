@@ -17,6 +17,7 @@ from dse4wse.pe_graph.task import (
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.mapper import get_default_mapper
 from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator
+from dse4wse.gnn.dataloader import LinkUtilDataset
 
 class GnnDataGenTransformerRunner(ReticleFidelityWseTransformerRunner):
     def __init__(self, attention_heads: int, hidden_size: int, sequence_length: int, number_of_layers: int, micro_batch_size: int, mini_batch_size: int, data_parallel_size: int, model_parallel_size: int, tensor_parallel_size: int, wafer_scale_engine: WaferScaleEngine, training_config: TrainingConfig, inter_wafer_bandwidth: Union[int, None] = None, zero_dp_os: bool = True, zero_dp_g: bool = True, zero_dp_p: bool = False, zero_r_pa: bool = True, num_reticle_per_pipeline_stage: int = 1, **kwargs) -> None:
@@ -137,18 +138,24 @@ def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict
 
     return training_data
 
-def generate_batch_gnn_training_data(num=None):
+def generate_batch_gnn_training_data(idx_range=None):
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
         legal_points = pkl.load(f)
-    random.shuffle(legal_points, lambda : 0.42)
-    if num == None:
-        num = len(legal_points)
-    for i in range(num):
+    random.shuffle(legal_points, lambda : 0.42)  # fixed random seed
+    if idx_range == None:
+        idx_range = range(len(legal_points))
+    for i in idx_range:
         design_point, model_parameters = legal_points[i]
         training_data = generate_single_gnn_training_data(design_point, model_parameters)
         # print(training_data)
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', f"{i}.pickle"), 'wb') as f:
             pkl.dump(training_data, f)
 
+def test_dataloader():
+    dataset = LinkUtilDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+    test_data = dataset[0]
+    logger.debug(test_data)
+
 if __name__ == "__main__":
-    generate_batch_gnn_training_data(num=1)
+    generate_batch_gnn_training_data(idx_range=[0])
+    test_dataloader()

@@ -8,6 +8,7 @@ import networkx as nx
 from networkx import DiGraph
 from scipy.optimize import linprog
 import numpy as np
+import torch as th
 
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import BaseReticleTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
@@ -321,8 +322,8 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                     hlid_goes_to_hlid.append((hlid_src, hlid_dst))
 
         def decompose_edge_list(edge_list, reverse=False):
-            src_list = np.array([e[0] for e in edge_list])
-            dst_list = np.array([e[1] for e in edge_list])
+            src_list = th.tensor([e[0] for e in edge_list])
+            dst_list = th.tensor([e[1] for e in edge_list])
             if not reverse:
                 return src_list, dst_list
             else:
@@ -338,12 +339,12 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             ('link', 'connected_by', 'link'): decompose_edge_list(hlid_goes_to_hlid, reverse=True),
         }
         feat_dict = {
-            'reticle_used_by': np.array(hrid_used_by_hyper_features),
-            'dram_port_used_by': np.array(hdpid_used_by_hyper_features),
-            'link_used_by': np.array(hlid_used_by_hyper_features),
+            'reticle_used_by': th.tensor(hrid_used_by_hyper_features),
+            'dram_port_used_by': th.tensor(hdpid_used_by_hyper_features),
+            'link_used_by': th.tensor(hlid_used_by_hyper_features),
         }
         label_dict = {
-            'link': np.array(hlid_label),
+            'link': th.tensor(hlid_label),
         }
 
         return data_dict, feat_dict, label_dict
