@@ -271,9 +271,11 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         num_hyper_nodes = len(self.vrid_2_var)
 
         # physical id -> heterogenenous graph index
-        prid_2_hrid = {prid: i for i, (prid, ndata) in G.nodes(data=True) if ndata['compute_mark']}
-        pdpid_2_hdpid = {pdpid: i for i, (pdpid, ndata) in G.nodes(data=True) if ndata['dram_access_mark']}
-        plid_2_hlid = {plid: i for i, plid in G.edges()}
+        prids = [prid for prid, ndata in G.nodes(data=True) if ndata['compute_mark']]
+        prid_2_hrid = {prid: i for i, prid in enumerate(prids)}
+        pdpids = [pdpid for pdpid, ndata in G.nodes(data=True) if ndata['dram_access_mark']]
+        pdpid_2_hdpid = {pdpid: i for i, pdpid in enumerate(pdpids)}
+        plid_2_hlid = {plid: i for i, plid in enumerate(G.edges())}
 
         # reticle used by reticle task (hyper node)
         # feature is ideal latency (it is at least normalized...)
@@ -316,12 +318,12 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
                 if v == r:
                     hlid_src = plid_2_hlid[(u, v)]
                     hlid_dst = plid_2_hlid[(r, s)]
-                    hlid_goes_to_hlid.append(hlid_src, hlid_dst)
+                    hlid_goes_to_hlid.append((hlid_src, hlid_dst))
 
         def decompose_edge_list(edge_list, reverse=False):
             src_list = np.array([e[0] for e in edge_list])
             dst_list = np.array([e[1] for e in edge_list])
-            if reverse:
+            if not reverse:
                 return src_list, dst_list
             else:
                 return dst_list, src_list

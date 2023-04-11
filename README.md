@@ -3,6 +3,12 @@ Design Space Exploration toolset for Wafer-Scale Engine
 
 # Getting started
 
+## Installing
+Create a new python venv or conda environment and run:
+```
+python -m pip install -r requirements
+```
+
 ## Operator Graph Estimation
 ```
 python test/attention/test_attention.py --case 0
