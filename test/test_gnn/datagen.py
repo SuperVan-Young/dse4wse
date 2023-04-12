@@ -146,10 +146,15 @@ def generate_batch_gnn_training_data(idx_range=None):
         idx_range = range(len(legal_points))
     for i in idx_range:
         design_point, model_parameters = legal_points[i]
-        training_data = generate_single_gnn_training_data(design_point, model_parameters)
-        # print(training_data)
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', f"{i}.pickle"), 'wb') as f:
-            pkl.dump(training_data, f)
+        try:
+            training_data = generate_single_gnn_training_data(design_point, model_parameters)
+            # print(training_data)
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', f"{i}.pickle"), 'wb') as f:
+                pkl.dump(training_data, f)
+        except KeyboardInterrupt:
+            exit(1)
+        except:
+            continue
 
 def test_dataloader():
     dataset = LinkUtilDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
@@ -157,5 +162,5 @@ def test_dataloader():
     logger.debug(test_data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_training_data(idx_range=[0])
+    generate_batch_gnn_training_data(idx_range=None)
     test_dataloader()
