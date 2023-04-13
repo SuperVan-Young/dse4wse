@@ -17,7 +17,7 @@ def get_dataset():
     return dataset
 
 def get_model():
-    model = HeteroNet(h_dim=64)
+    model = HeteroNet(h_dim=128)
     return model
 
 def run_model():
@@ -26,9 +26,9 @@ def run_model():
     model(test_data)
 
 def train_model(model, dataset):
-    NUM_EPOCH = 30
+    NUM_EPOCH = 100
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     lr_schduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCH, eta_min=1e-5)
 
     for epoch in range(NUM_EPOCH):
@@ -50,12 +50,18 @@ def train_model(model, dataset):
         logger.debug(f"average loss: {total_loss / len(dataset)}")
 
 def test_model(model, dataset):
+    total_mae = 0
+
     with torch.no_grad():
         for data in dataset:
             logits = model(data)
             label = data.nodes['link'].data['label'].reshape(-1, 1).float()
             mae = torch.abs(logits - label).mean()
-            logger.debug(f"MAE: {mae}")
+            total_mae += mae.item()
+            # logger.debug(f"MAE: {mae}")
+    
+    avg_mae = total_mae / len(dataset)
+    logger.debug(f"Overall MAE: {avg_mae}")
 
 def main():
     dataset = get_dataset()

@@ -141,6 +141,9 @@ def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
+else:
+    os.rmdir(DATA_DIR)
+    os.mkdir(DATA_DIR)
 
 def generate_batch_gnn_training_data(idx_range=None):
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
@@ -167,5 +170,5 @@ def test_dataloader():
     logger.debug(test_data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_training_data(idx_range=range(1000))
+    generate_batch_gnn_training_data(idx_range=range(100))
     test_dataloader()

@@ -357,17 +357,24 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             ('link', 'connect_to', 'link'): decompose_edge_list(hlid_goes_to_hlid),
             ('link', 'connected_by', 'link'): decompose_edge_list(hlid_goes_to_hlid, reverse=True),
         }
+        def generate_feature_tensor(feat, add_ones=True):
+            t = th.tensor(feat).reshape(-1, 1)
+            if add_ones:
+                ones = th.ones(len(feat), 1)
+                t = th.concat((t, ones), dim=-1)
+            return t
+
         feat_dict = {
-            'reticle_used_by': th.tensor(hrid_used_by_hyper_features).reshape(-1, 1),
-            'dram_port_used_by': th.tensor(hdpid_used_by_hyper_features).reshape(-1, 1),
-            'link_used_by': th.tensor(hlid_used_by_hyper_features).reshape(-1, 1),
+            'reticle_used_by': generate_feature_tensor(hrid_used_by_hyper_features),
+            'dram_port_used_by': generate_feature_tensor(hdpid_used_by_hyper_features),
+            'link_used_by': generate_feature_tensor(hlid_used_by_hyper_features),
 
-            'use_reticle': th.tensor(hrid_used_by_hyper_features).reshape(-1, 1),
-            'use_dram_port': th.tensor(hdpid_used_by_hyper_features).reshape(-1, 1),
-            'use_link': th.tensor(hlid_used_by_hyper_features).reshape(-1, 1),
+            'use_reticle': generate_feature_tensor(hrid_used_by_hyper_features),
+            'use_dram_port': generate_feature_tensor(hdpid_used_by_hyper_features),
+            'use_link': generate_feature_tensor(hlid_used_by_hyper_features),
 
-            'connect_to': th.tensor(hlid_connect_to_ratio).reshape(-1, 1),
-            'connected_by': th.tensor(hlid_connected_by_ratio).reshape(-1, 1),
+            'connect_to': generate_feature_tensor(hlid_connect_to_ratio, add_ones=False),
+            'connected_by': generate_feature_tensor(hlid_connected_by_ratio, add_ones=False),
         }
         label_dict = {
             'link': th.tensor(hlid_label),
