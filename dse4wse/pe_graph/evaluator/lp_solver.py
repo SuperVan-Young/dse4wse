@@ -9,6 +9,7 @@ from networkx import DiGraph
 from scipy.optimize import linprog
 import numpy as np
 import torch as th
+from itertools import chain, product
 
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import BaseReticleTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
@@ -314,12 +315,26 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # add edges between links
         # is u -> v -> r, then we say (u, v) goes to (v, r)
         hlid_goes_to_hlid = []
-        for u, v in G.edges():
-            for r, s in G.edges():
-                if v == r:
-                    hlid_src = plid_2_hlid[(u, v)]
-                    hlid_dst = plid_2_hlid[(r, s)]
-                    hlid_goes_to_hlid.append((hlid_src, hlid_dst))
+        hlid_connect_to_ratio = []  # how much data of prev link are transferred to next link
+        hlid_connected_by_ratio = []  # how much data of succ link are transferred from prev link
+        # this is not very accurate, since we've already mixed up all the transmission of the same fused task
+        # therefore, we consider the maximum possible transmission inside this router
+        for (u, v), (r, s) in product(G.edges(), G.edges()):
+            if v == r:
+                hlid_src = plid_2_hlid[(u, v)]
+                hlid_dst = plid_2_hlid[(r, s)]
+                hlid_goes_to_hlid.append((hlid_src, hlid_dst))
+                total_data_amount = 0
+                prev_transmission_mark = G.edges[(u, v)]['transmission_mark']
+                succ_transmission_mark = G.edges[(r, s)]['transmission_mark']
+                union_hyper_set = set(prev_transmission_mark.keys()) | set(succ_transmission_mark.keys())
+                for hyper in union_hyper_set:
+                    data_amount = min(prev_transmission_mark.get(hyper, 0), succ_transmission_mark.get(hyper, 0))
+                    total_data_amount += data_amount
+                prev_total_data_amount = sum(prev_transmission_mark.values())
+                succ_total_data_amount = sum(succ_transmission_mark.values())
+                hlid_connect_to_ratio.append(total_data_amount / prev_total_data_amount)
+                hlid_connected_by_ratio.append(total_data_amount / succ_total_data_amount)
 
         def decompose_edge_list(edge_list, reverse=False):
             src_list = th.tensor([e[0] for e in edge_list])
@@ -334,14 +349,25 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             ('reticle', 'reticle_used_by', 'task'): decompose_edge_list(hrid_used_by_hyper),
             ('dram_port', 'dram_port_used_by', 'task'): decompose_edge_list(hdpid_used_by_hyper),
             ('link', 'link_used_by', 'task'): decompose_edge_list(hlid_used_by_hyper),
+
+            ('task', 'use_reticle', 'reticle'): decompose_edge_list(hrid_used_by_hyper, reverse=True),
+            ('task', 'use_dram_port', 'dram_port'): decompose_edge_list(hdpid_used_by_hyper, reverse=True),
             ('task', 'use_link', 'link'): decompose_edge_list(hlid_used_by_hyper, reverse=True),
+
             ('link', 'connect_to', 'link'): decompose_edge_list(hlid_goes_to_hlid),
             ('link', 'connected_by', 'link'): decompose_edge_list(hlid_goes_to_hlid, reverse=True),
         }
         feat_dict = {
-            'reticle_used_by': th.tensor(hrid_used_by_hyper_features),
-            'dram_port_used_by': th.tensor(hdpid_used_by_hyper_features),
-            'link_used_by': th.tensor(hlid_used_by_hyper_features),
+            'reticle_used_by': th.tensor(hrid_used_by_hyper_features).reshape(-1, 1),
+            'dram_port_used_by': th.tensor(hdpid_used_by_hyper_features).reshape(-1, 1),
+            'link_used_by': th.tensor(hlid_used_by_hyper_features).reshape(-1, 1),
+
+            'use_reticle': th.tensor(hrid_used_by_hyper_features).reshape(-1, 1),
+            'use_dram_port': th.tensor(hdpid_used_by_hyper_features).reshape(-1, 1),
+            'use_link': th.tensor(hlid_used_by_hyper_features).reshape(-1, 1),
+
+            'connect_to': th.tensor(hlid_connect_to_ratio).reshape(-1, 1),
+            'connected_by': th.tensor(hlid_connected_by_ratio).reshape(-1, 1),
         }
         label_dict = {
             'link': th.tensor(hlid_label),

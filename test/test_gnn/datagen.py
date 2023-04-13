@@ -138,6 +138,10 @@ def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict
 
     return training_data
 
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+if not os.path.exists(DATA_DIR):
+    os.mkdir(DATA_DIR)
+
 def generate_batch_gnn_training_data(idx_range=None):
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
         legal_points = pkl.load(f)
@@ -149,11 +153,12 @@ def generate_batch_gnn_training_data(idx_range=None):
         try:
             training_data = generate_single_gnn_training_data(design_point, model_parameters)
             # print(training_data)
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', f"{i}.pickle"), 'wb') as f:
+            with open(os.path.join(DATA_DIR, f"{i}.pickle"), 'wb') as f:
                 pkl.dump(training_data, f)
         except KeyboardInterrupt:
             exit(1)
         except:
+            logger.debug("Error in generating data")
             continue
 
 def test_dataloader():
