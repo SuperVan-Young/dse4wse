@@ -373,4 +373,6 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             'link': th.tensor(hlid_label),
         }
 
+        assert hlid_label, "We don't support no-link cases"
+
         return data_dict, feat_dict, label_dict

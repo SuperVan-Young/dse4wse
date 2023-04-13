@@ -26,17 +26,28 @@ def run_model():
     model(test_data)
 
 def train_model(model, dataset):
-    optimizer = torch.optim.Adam(model.parameters())
+    NUM_EPOCH = 30
 
-    for epoch in range(5):
-        logger.info(f"Epoch {epoch}:")
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    lr_schduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCH, eta_min=1e-5)
+
+    for epoch in range(NUM_EPOCH):
+        total_loss = 0
 
         for data in dataset:
             logits = model(data)
             label = data.nodes['link'].data['label'].reshape(-1, 1).float()
-            loss = F.mse_loss(logits, label)
+            # loss = F.mse_loss(logits, label)
+            loss = F.smooth_l1_loss(logits, label)
             loss.backward()
             optimizer.step()
+            total_loss += loss.item()
+
+        lr_schduler.step()
+
+        logger.info(f"Epoch {epoch}:")
+        logger.debug(f"learning rate: {lr_schduler.get_lr()}")
+        logger.debug(f"average loss: {total_loss / len(dataset)}")
 
 def test_model(model, dataset):
     with torch.no_grad():

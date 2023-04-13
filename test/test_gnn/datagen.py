@@ -167,5 +167,5 @@ def test_dataloader():
     logger.debug(test_data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_training_data(idx_range=None)
+    generate_batch_gnn_training_data(idx_range=range(1000))
     test_dataloader()
