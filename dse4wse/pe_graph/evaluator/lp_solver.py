@@ -301,7 +301,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         
         hlid_used_by_hyper = []
         hlid_used_by_hyper_features = []
-        hlid_label = []  # effective bandwidth to predict
+        hlid_label = []  # effective bandwidth to predict, 0 ~ 100%
         inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
         for plid, hlid in plid_2_hlid.items():
             transmission_mark = G.edges[plid]['transmission_mark']

@@ -36,8 +36,6 @@ class TaskInfoConv(nn.Module):
             },
             'sum',
         )
-        for ntype in ['reticle', 'dram_port', 'link']:
-            logger.debug(G.nodes[ntype].data['inp'].shape)
         if self.activate_inp:
             for ntype in ['reticle', 'dram_port', 'link']:
                 linear = self.gather_linears[ntype]
@@ -110,7 +108,12 @@ class HeteroNet(nn.Module):
         super().__init__(*args, **kwargs)
         self.task_info_conv = TaskInfoConv(h_dim, activate_inp=True)
         self.link_conv = LinkConv(h_dim)
+        self.head = nn.Linear(h_dim, 1)
 
     def forward(self, G: dgl.heterograph):
         self.task_info_conv(G)
         self.link_conv(G)
+        h = G.nodes['link'].data['h']
+        logits = self.head(h)
+        logits = torch.sigmoid(logits)
+        return logits
