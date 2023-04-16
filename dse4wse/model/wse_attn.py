@@ -587,7 +587,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage)
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
-        self.is_overlap = False  # if ture, we overlap compute with inter reticle communication
+        self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
     
     def __alloc_new_dram_port(self):
@@ -1279,8 +1279,3 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         logger.debug(f"BP MLP repeats: {mlp_repeats}")
 
         return total_latency
-
-    def _get_propagation_latency(self, forward: bool) -> float:
-       return self.__get_forward_propatation_latency() if forward else self.__get_backward_propagation_latency()
-    
-    # TODO: collective cost analysis

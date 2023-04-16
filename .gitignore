@@ -5,3 +5,4 @@ data
 op_graph/graph_constructor/model/
 op_graph/graph_constructor/tmp/
 __pycache__
+test/test_gnn/data/
