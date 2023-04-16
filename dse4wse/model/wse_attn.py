@@ -47,27 +47,39 @@ class WseTransformerRunner():
                  zero_dp_g: bool = True,
                  zero_dp_p: bool = False,
                  zero_r_pa: bool = True,
-                 num_reticle_per_pipeline_stage: int = 1,
+                 nano_batch_size: int = 1,
+                 layer_pipeline_size: int = 1, 
+                 num_reticle_per_model_chunk: int = 1,
                  **kwargs,
                  ) -> None:
         # model parameters
         self.attention_heads = attention_heads
         self.hidden_size = hidden_size
-        assert hidden_size % attention_heads == 0
         self.sequence_length = sequence_length
         self.number_of_layers = number_of_layers
+        assert hidden_size % attention_heads == 0
 
         # parallelism parameters
-        self.micro_batch_size = micro_batch_size
-        self.mini_batch_size = mini_batch_size
-        self.data_parallel_size = data_parallel_size
-        self.model_parallel_size = model_parallel_size
-        self.tensor_parallel_size = tensor_parallel_size
-        self.num_reticle_per_pipeline_stage = num_reticle_per_pipeline_stage
-        assert number_of_layers % model_parallel_size == 0
-        assert hidden_size % tensor_parallel_size == 0
+        self.mini_batch_size = mini_batch_size    # unit of updating weight
+        self.micro_batch_size = micro_batch_size  # unit of model pipelining
+        self.nano_batch_size = nano_batch_size    # unit of layer pipelining
+        # we don't assert on exact division, and non-divisibility is punished by perf indicator.
 
-        # ZeRO settings, this setting is now fixed
+        self.data_parallel_size = data_parallel_size      # inter-wafer
+        self.model_parallel_size = model_parallel_size    # inter-wafer
+        self.tensor_parallel_size = tensor_parallel_size  # intra-wafer
+        self.layer_pipeline_size = layer_pipeline_size    # intra wafer
+        self.num_reticle_per_model_chunk = num_reticle_per_model_chunk
+        # check valid model chunking
+        assert number_of_layers % model_parallel_size == 0
+        assert (number_of_layers // model_parallel_size) % layer_pipeline_size == 0
+        assert hidden_size % tensor_parallel_size == 0
+        # check available reticle
+        used_reticle = layer_pipeline_size * tensor_parallel_size * num_reticle_per_model_chunk
+        total_reticle = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width
+        assert used_reticle <= total_reticle, f"Requiring {used_reticle} reticles but there's only {total_reticle}"
+
+        # ZeRO settings, this setting is now fixed for simplicity
         self.zero_dp_os = zero_dp_os
         self.zero_dp_g = zero_dp_g
         self.zero_dp_p = zero_dp_p
@@ -80,15 +92,11 @@ class WseTransformerRunner():
         # wse platform
         self.wafer_scale_engine = wafer_scale_engine
         self.inter_wafer_bandwidth = inter_wafer_bandwidth if inter_wafer_bandwidth \
-                                     else (wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width * wafer_scale_engine.inter_reticle_bandwidth)
+                                     else (wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width * wafer_scale_engine.inter_reticle_bandwidth)  # assume wafer-array bandwidth
 
         # training settings 
         self.training_config = training_config
         assert training_config
-
-        self.num_layer_per_pipeline_stage = number_of_layers // model_parallel_size
-        self.num_pipeline_stage_per_wafer = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width // (tensor_parallel_size * num_reticle_per_pipeline_stage)
-        assert self.num_pipeline_stage_per_wafer >= 1, f"Requiring {tensor_parallel_size * num_reticle_per_pipeline_stage} reticles but only {wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width} reticles on the wafer!"
 
         self._op_graph = self._build_op_graph()
 
@@ -276,7 +284,7 @@ class WseTransformerRunner():
         assert self.zero_dp_p is False
 
         total_latency = 0
-        compute_power = self.wafer_scale_engine.reticle_compute_power * self.num_reticle_per_pipeline_stage
+        compute_power = self.wafer_scale_engine.reticle_compute_power * self.num_reticle_per_model_chunk
 
         for op_name, op in self._op_graph.nodes(data='operator'):
             assert op.op_type == "Matmul"
@@ -288,7 +296,6 @@ class WseTransformerRunner():
 
     def _get_bisection_bandwidth(self) -> int:
         return 2 * (self.wafer_scale_engine.reticle_array_height + self.wafer_scale_engine.reticle_array_width) * self.wafer_scale_engine.inter_reticle_bandwidth
-    
     
     def _get_input_latency(self, forward: bool) -> float:
         tensors = self._op_graph.get_tensors()
@@ -410,7 +417,7 @@ class WseTransformerRunner():
             and if activation need to be stored on DRAM
         """
         tensors = self._op_graph.get_tensors()
-        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_pipeline_stage
+        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk
 
         # for simplicity, we assume that we use feed 1 sequence at a time
         # if in this case, weight cannot stay on chip, it's just too bad.
@@ -581,12 +588,12 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                  zero_dp_g: bool = True, 
                  zero_dp_p: bool = False, 
                  zero_r_pa: bool = True, 
-                 num_reticle_per_pipeline_stage: int = 1,
+                 num_reticle_per_model_chunk: int = 1,
                  **kwargs,
                  ) -> None:
-        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage)
-        self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
-        self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_pipeline_stage)))}
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_model_chunk)
+        self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
+        self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
     
@@ -609,7 +616,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             if forward:
                 return worker_reticle_index == 0
             else:
-                return worker_reticle_index == self.num_reticle_per_pipeline_stage - 1
+                return worker_reticle_index == self.num_reticle_per_model_chunk - 1
 
         task_list = []
 
@@ -645,7 +652,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         # this split is very naive, and may not lead to a valid split
         tensors = self._op_graph.get_tensors()
         weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
-        weight_tensor_numel = weight_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
+        weight_tensor_numel = weight_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk
         weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         
         task_list = []
@@ -664,7 +671,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     def __assign_swap_activation_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
         tensors = self._op_graph.get_tensors()
         activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
-        activation_tensor_numel = activation_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage / self.micro_batch_size
+        activation_tensor_numel = activation_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk / self.micro_batch_size
         activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
         activation_tensor_size = activation_tensor_size * 2 if not forward else activation_tensor_size 
 
@@ -683,7 +690,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         # compute size for one reticle
         compute_amount = sum([op.get_fp_mac_count() if forward else op.get_bp_mac_count() + op.get_fp_mac_count() 
                               for name, op in self._op_graph.nodes(data='operator')]) / self.micro_batch_size
-        compute_amount = compute_amount * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage
+        compute_amount = compute_amount * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk
 
         task_list = []
 
@@ -696,7 +703,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     def __assign_allreduce_reticle_task(self, forward: bool):
         tensors = self._op_graph.get_tensors()
         allreduce_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in (['Z', 'X2_mlp'] if forward else ['X', 'X0_mlp', 'Z', 'X2_mlp'])])
-        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_pipeline_stage / self.micro_batch_size
+        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk / self.micro_batch_size
         allreduce_numel = allreduce_numel * 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size
         allreduce_size = allreduce_numel * self.training_config.get_precision_size()
 
