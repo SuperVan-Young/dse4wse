@@ -70,11 +70,6 @@ class WseTransformerRunner():
         # check valid model chunking
         assert number_of_layers % model_parallel_size == 0
         assert hidden_size % tensor_parallel_size == 0
-        # check available reticle
-        used_reticle = self.tensor_parallel_size * self.num_reticle_per_model_chunk
-        total_reticle = self.wafer_scale_engine.reticle_array_height * self.wafer_scale_engine.reticle_array_width
-        assert used_reticle <= total_reticle, f"Requiring {used_reticle} reticles but there's only {total_reticle}"
-        self.num_layer_per_model_chunk = (self.number_of_layers // self.model_parallel_size)
 
         # intra-model-chunk params, transparent to users
         # Best exec params differ from training to inference, so we find optimal setting
@@ -98,6 +93,11 @@ class WseTransformerRunner():
         self.wafer_scale_engine = wafer_scale_engine
         self.inter_wafer_bandwidth = inter_wafer_bandwidth if inter_wafer_bandwidth \
                                      else (wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width * wafer_scale_engine.inter_reticle_bandwidth)  # assume wafer-array bandwidth
+        # check available reticle
+        used_reticle = self.tensor_parallel_size * self.num_reticle_per_model_chunk
+        total_reticle = self.wafer_scale_engine.reticle_array_height * self.wafer_scale_engine.reticle_array_width
+        assert used_reticle <= total_reticle, f"Requiring {used_reticle} reticles but there's only {total_reticle}"
+        self.num_layer_per_model_chunk = (self.number_of_layers // self.model_parallel_size)
 
         # training settings 
         self.training_config = training_config
@@ -113,7 +113,7 @@ class WseTransformerRunner():
                     continue
                 self.nano_batch_size = nano_batch_size  # maximum nano batch size you can find
                 break
-            assert self.nano_batch_size
+            assert self.nano_batch_size, "Minimum nano batch size cannot be held on the wafer!"
         else:  # layer pipelining
             self.nano_batch_size = None
             self.layer_pipeline_size = None
@@ -130,7 +130,7 @@ class WseTransformerRunner():
                 if bubble_rate < min_bubble_rate:
                     self.nano_batch_size = nano_batch_size
                     self.layer_pipeline_size = layer_pipeline_size
-            assert self.nano_batch_size
+            assert self.nano_batch_size, "Minimum nano batch size cannot be held on the wafer!"
             assert self.layer_pipeline_size
 
     # helper functions for API
@@ -164,7 +164,7 @@ class WseTransformerRunner():
         if inference:
             return total_flops
         else:
-            return total_flops * 3  # fp + bp + rematerialization
+            return total_flops * 2  # only bp, rematerialization is considered separately
     
     def _get_ideal_compute_latency(self, inference: bool) -> float:
         """ Ideal compute latency of a model chunk
@@ -357,7 +357,8 @@ class WseTransformerRunner():
                 # buffer all activations -- is impossible for very large models
                 # we allow rematerialize activation layer by layer
                 # in this way, we maximize reuse of weight
-                act_size = (attn_act_size + ffn_act_size) * self.nano_batch_size
+                act_size = (attn_act_size + ffn_act_size) * nano_batch_size
+            # logger.debug(f"nano batch size: {nano_batch_size}, weight streaming act size: {act_size / 1e9} GB, sram size: {sram_size / 1e9} GB")
             return act_size < sram_size  # save some space for weight
         else:  # layer pipelining
             weight_size = self._get_weight_numel_per_model_chunk()
@@ -435,6 +436,8 @@ class WseTransformerRunner():
         """
         logger.info("Calculating training throughput of attention module")
 
+        self._find_best_intra_model_chunk_exec_params(inference=False)
+
         single_stage_fp_latency = self.get_propagation_latency(inference=True) + self._get_activation_cross_pipeline_stage_latency()
         single_stage_bp_latency = self.get_propagation_latency(inference=False) + self._get_activation_cross_pipeline_stage_latency()
         weight_comm_latency = self._get_weight_update_latency()
@@ -447,6 +450,8 @@ class WseTransformerRunner():
 
     def get_training_wse_utilization(self) -> float:
         logger.info("Calculating training wse utilization of attention module")
+
+        self._find_best_intra_model_chunk_exec_params(inference=False)
         
         single_stage_fp_latency = self.get_propagation_latency(inference=True) + self._get_activation_cross_pipeline_stage_latency()
         single_stage_bp_latency = self.get_propagation_latency(inference=False) + self._get_activation_cross_pipeline_stage_latency()
@@ -476,6 +481,8 @@ class WseTransformerRunner():
     
     def get_inference_latency(self) -> float:
         logger.info("Calculating inference latency of attention module")
+
+        self._find_best_intra_model_chunk_exec_params(inference=True)
 
         single_stage_fp_latency = self.get_propagation_latency(inference=True)
         total_fp_latency = single_stage_fp_latency * self.model_parallel_size
