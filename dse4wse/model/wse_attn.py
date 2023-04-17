@@ -62,24 +62,20 @@ class WseTransformerRunner():
         # parallelism parameters
         self.mini_batch_size = mini_batch_size    # unit of updating weight
         self.micro_batch_size = micro_batch_size  # unit of model pipelining
-        self.nano_batch_size = nano_batch_size    # unit of layer pipelining
-        # we don't assert on exact division, and non-divisibility is punished by perf indicator.
+        self.nano_batch_size = None
+        assert micro_batch_size <= mini_batch_size
+        self._set_nano_batch_size(nano_batch_size) # unit of layer pipelining
 
         self.data_parallel_size = data_parallel_size      # inter-wafer
         self.model_parallel_size = model_parallel_size    # inter-wafer
         self.tensor_parallel_size = tensor_parallel_size  # intra-wafer
-        self.layer_pipeline_size = layer_pipeline_size    # intra wafer
         self.num_reticle_per_model_chunk = num_reticle_per_model_chunk
         # check valid model chunking
         assert number_of_layers % model_parallel_size == 0
-        assert (number_of_layers // model_parallel_size) % layer_pipeline_size == 0
         assert hidden_size % tensor_parallel_size == 0
-        # check available reticle
-        used_reticle = layer_pipeline_size * tensor_parallel_size * num_reticle_per_model_chunk
-        total_reticle = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width
-        assert used_reticle <= total_reticle, f"Requiring {used_reticle} reticles but there's only {total_reticle}"
-
-        self.num_layer_per_model_chunk = (number_of_layers // model_parallel_size) // layer_pipeline_size
+        self.layer_pipeline_size = None
+        self.num_layer_per_model_chunk = None
+        self._set_layer_pipeline_size(layer_pipeline_size)
 
         # ZeRO settings, this setting is now fixed for simplicity
         self.zero_dp_os = zero_dp_os
@@ -99,13 +95,31 @@ class WseTransformerRunner():
         # training settings 
         self.training_config = training_config
     
+    def _set_nano_batch_size(self, nano_batch_size) -> None:
+        """ reset nano batch size and check feasibility
+        """
+        assert nano_batch_size <= self.micro_batch_size
+        self.nano_batch_size = nano_batch_size
+
+    def _set_layer_pipeline_size(self, layer_pipeline_size) -> None:
+        """ reset layer pipeline size and relevant params, and check feasibility
+        """
+        # check division feasibility
+        assert (self.number_of_layers // self.model_parallel_size) % layer_pipeline_size == 0
+        # check available reticle
+        used_reticle = layer_pipeline_size * self.tensor_parallel_size * self.num_reticle_per_model_chunk
+        total_reticle = self.wafer_scale_engine.reticle_array_height * self.wafer_scale_engine.reticle_array_width
+        assert used_reticle <= total_reticle, f"Requiring {used_reticle} reticles but there's only {total_reticle}"
+
+        self.layer_pipeline_size = layer_pipeline_size
+        self.num_layer_per_model_chunk = (self.number_of_layers // self.model_parallel_size) // layer_pipeline_size
+
     # helper functions for API
 
-    def _get_flops_per_layer(self, batch_size, inference=False):
+    def _get_flops_per_model_chunk(self, batch_size, num_layers, inference=False):
         """ Calculate FLOPS, copied from Cerebras-GPT appendix.
-        Embedding and final logits are ignored for simplicity
+        Embedding and final logits are ignored for simplicity.
         """
-        B = batch_size
         d_model = self.hidden_size
         seq_len = self.sequence_length
         num_heads = self.attention_heads
@@ -128,12 +142,12 @@ class WseTransformerRunner():
 
         total_flops = attention_blocks + dense_blocks + layer_norm_flops + gelu_flops
         total_flops *= batch_size  # we might be adjusting nano batch size
+        total_flops *= num_layers  # we might be adjusting layer pipelining factor
 
         if inference:
             return total_flops
         else:
             return total_flops * 3  # fp + bp + rematerialization
-    
     
     def _get_ideal_compute_latency(self, forward: bool) -> float:
         """ Ideal compute latency of a pipeline stage 
@@ -142,47 +156,60 @@ class WseTransformerRunner():
         assert self.zero_dp_p is False
 
         compute_power = self.wafer_scale_engine.reticle_compute_power * self.num_reticle_per_model_chunk
-        total_flops = self._get_flops_per_layer(self.nano_batch_size, forward)
+        total_flops = self._get_flops_per_model_chunk(self.nano_batch_size, self.num_layer_per_model_chunk, forward)
         total_latency = total_flops / compute_power
 
         return total_latency 
 
-    def _get_bisection_bandwidth(self) -> int:
-        """ This is actually the maximum bandwidth 2d-torus could offer, not the conventional bisection bandwidth
-        """
-        return 2 * (self.wafer_scale_engine.reticle_array_height + self.wafer_scale_engine.reticle_array_width) * self.wafer_scale_engine.inter_reticle_bandwidth
+    def _get_weight_size_per_model_chunk(self, num_layers):
+        d_model = self.hidden_size
+
+        ln1 = 2 * d_model 
+        attn = 4 * (d_model ** 2 + d_model) 
+        ln2 = 2 * d_model 
+        ffn = 8 * (d_model ** 2) + 5 * d_model
+        
+        total_size = ln1 + attn + ln2 + ffn
+        total_size *= num_layers
+
+        return total_size
     
+    # Calculate latency of each part
+
     def _get_input_latency(self, forward: bool) -> float:
-        """ Fetch 1 share of input, and broadcast to other tensor parallel model chunk
+        """ This latency is dominated by fetching 1 share of input, 
+            and broadcasting to other tensor parallel model chunk.
         """
-        tensors = self._op_graph.get_tensors()
-        input_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X']])
-        input_tensor_numel = (2 * input_tensor_numel) if not forward else input_tensor_numel  # rematerialization
+        input_tensor_numel = self.nano_batch_size * self.sequence_length * self.hidden_size
+        if not forward: input_tensor_numel *= 2  # rematerialization
 
         dram_access_size = input_tensor_numel * self.training_config.get_precision_size()
         dram_access_latency = dram_access_size / self.wafer_scale_engine.dram_bandwidth
 
         inter_reticle_size = input_tensor_numel * self.training_config.get_precision_size() * (self.tensor_parallel_size - 1)
-        bisection_bandwidth = self._get_bisection_bandwidth()
+        bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
         inter_reticle_latency = inter_reticle_size / bisection_bandwidth
 
-        return dram_access_latency + inter_reticle_latency
+        total_latency = dram_access_latency + inter_reticle_latency
+        return total_latency
     
     def _get_swap_weight_latency(self, forward: bool) -> float:
         """
         Estimation on swapping weight in and out of DRAM.
-        Weight need to be loaded for every sequence.
-        We only consider tranmission is bounded by on-chip reticle network
         """
-        tensors = self._op_graph.get_tensors()
-        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
-        weight_tensor_numel = weight_tensor_numel * self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # on the wafer
-        weight_tensor_numel = weight_tensor_numel * self.micro_batch_size  # swapped times
-        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
-        weight_tensor_size = (2 * weight_tensor_size) if not forward else weight_tensor_size  # read weight & write grad
+        weight_numel_per_model_chunk = self._get_weight_size_per_model_chunk(self.num_layer_per_model_chunk)
+        weight_numel_per_wafer = weight_numel_per_model_chunk * self.tensor_parallel_size * self.layer_pipeline_size
+        swapped_weight_numel = ceil(self.micro_batch_size / self.nano_batch_size) * weight_numel_per_wafer
+        if not forward: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
 
-        bisection_bandwidth = self._get_bisection_bandwidth()
-        return weight_tensor_size / bisection_bandwidth
+        bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
+        total_dram_bandwidth = self.wafer_scale_engine.get_total_dram_bandwidth()
+        bottleneck_bandwidth = min(bisection_bandwidth, total_dram_bandwidth)
+
+        total_latency = swapped_weight_size / bottleneck_bandwidth
+
+        return total_latency
     
     def _get_swap_activation_latency(self, forward: bool) -> float:
         """
@@ -195,7 +222,7 @@ class WseTransformerRunner():
         activation_tensor_size = activation_tensor_size * 2  # 1 read + 1 write
         activation_tensor_size = activation_tensor_size * 2 if not forward else activation_tensor_size  # activation + grad
 
-        bisection_bandwidth = self._get_bisection_bandwidth()
+        bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
         return activation_tensor_size / bisection_bandwidth
     
     def _get_compute_latency(self, forward: bool) -> float:
