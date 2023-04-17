@@ -164,7 +164,7 @@ class WseTransformerRunner():
         if inference:
             return total_flops
         else:
-            return total_flops * 2  # only bp, rematerialization is considered separately
+            return total_flops * 3
     
     def _get_ideal_compute_latency(self, inference: bool) -> float:
         """ Ideal compute latency of a model chunk
@@ -385,6 +385,16 @@ class WseTransformerRunner():
         idle_latency = (self.layer_pipeline_size - 1) / (self.micro_batch_size // self.nano_batch_size) * total_latency
         total_latency += idle_latency
 
+        # debugging
+        raw_report = {
+            'input': input_latency,
+            'swap_weight': swap_weight_latency,
+            'compute': compute_latency,
+            'allreduce': activation_allreduce_latency,
+            'output': output_latency,
+        }
+        logger.debug(raw_report)
+
         if detailed_report:
             return {
                 'compute': compute_latency,
@@ -438,12 +448,10 @@ class WseTransformerRunner():
 
         self._find_best_intra_model_chunk_exec_params(inference=False)
 
-        single_stage_fp_latency = self.get_propagation_latency(inference=True) + self._get_activation_cross_pipeline_stage_latency()
-        single_stage_bp_latency = self.get_propagation_latency(inference=False) + self._get_activation_cross_pipeline_stage_latency()
+        single_stage_latency = self.get_propagation_latency(inference=False) + self._get_activation_cross_pipeline_stage_latency() * 2
         weight_comm_latency = self._get_weight_update_latency()
-        
         pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size / self.data_parallel_size)
-        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency) + weight_comm_latency
+        whole_batch_latency = pipeline_factor * single_stage_latency + weight_comm_latency
         sequence_per_sec = self.mini_batch_size / whole_batch_latency
 
         return sequence_per_sec
@@ -453,25 +461,23 @@ class WseTransformerRunner():
 
         self._find_best_intra_model_chunk_exec_params(inference=False)
         
-        single_stage_fp_latency = self.get_propagation_latency(inference=True) + self._get_activation_cross_pipeline_stage_latency()
-        single_stage_bp_latency = self.get_propagation_latency(inference=False) + self._get_activation_cross_pipeline_stage_latency()
+        single_stage_latency = self.get_propagation_latency(inference=False) + self._get_activation_cross_pipeline_stage_latency() * 2
         weight_update_latency = self._get_weight_update_latency() 
         pipeline_factor = (self.model_parallel_size - 1) + ceil(self.mini_batch_size / self.micro_batch_size / self.data_parallel_size)
-        whole_batch_latency = pipeline_factor * (single_stage_fp_latency + single_stage_bp_latency) + weight_update_latency
+        whole_batch_latency = pipeline_factor * single_stage_latency + weight_update_latency
 
-        ideal_compute_latency = self._get_ideal_compute_latency(inference=True) + self._get_ideal_compute_latency(inference=False)
+        ideal_compute_latency = self._get_ideal_compute_latency(inference=False)
         ideal_compute_latency *= ceil(self.mini_batch_size / self.micro_batch_size / self.data_parallel_size)
         utilization = ideal_compute_latency / whole_batch_latency
 
         # debugging
-        fp_report = self.get_propagation_latency(inference=True, detailed_report=True)
         bp_report = self.get_propagation_latency(inference=False, detailed_report=True)
         num_micro_batch = ceil(self.mini_batch_size / self.micro_batch_size / self.data_parallel_size)
         full_report = {
-            'compute': num_micro_batch * (fp_report['compute'] + bp_report['compute']),
-            'inter_reticle': num_micro_batch * (fp_report['inter_reticle'] + bp_report['inter_reticle']),
+            'compute': num_micro_batch * bp_report['compute'],
+            'inter_reticle': num_micro_batch * bp_report['inter_reticle'],
             'inter_wafer': num_micro_batch * (self._get_activation_cross_pipeline_stage_latency() * 2) + weight_update_latency,
-            'idle': (self.model_parallel_size - 1) * (single_stage_fp_latency + single_stage_bp_latency) + num_micro_batch * (fp_report['idle'] + bp_report['idle']),
+            'idle': (self.model_parallel_size - 1) * single_stage_latency + num_micro_batch * bp_report['idle'],
         }
         logger.info("Summary for checking time utilization proportion:")
         for k, v in full_report.items():
@@ -529,7 +535,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         self.num_pipeline_stage_per_wafer = 1   # stay compatible with old codes
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
-        self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
+        self.is_overlap = False  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
     
     def __alloc_new_dram_port(self):
@@ -546,6 +552,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         input_tensor_numel = self.nano_batch_size * self.sequence_length * self.hidden_size
         input_tensor_size = input_tensor_numel * self.training_config.get_precision_size()
         if rematerialization and self.weight_streaming: input_tensor_size *= self.num_layer_per_model_chunk
+        # rematerialization might use different DRAM port
 
         repeated_times = ceil(self.micro_batch_size / self.nano_batch_size)
 
@@ -644,13 +651,8 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         return task_list
 
     def __assign_compute_reticle_task(self, inference: bool) -> List[BaseReticleTask]:
-        # compute size for one reticle
-        if inference:
-            compute_amount_per_model_chunk = self._get_flops_per_seq_per_layer(inference=True)
-        else:
-            compute_amount_per_model_chunk = self._get_flops_per_seq_per_layer(inference=True) \
-                                           + self._get_flops_per_seq_per_layer(inference=False)
-
+        # compute size for one reticle (consider rematerialization seperately)
+        compute_amount_per_model_chunk = self._get_flops_per_seq_per_layer(inference=inference)
         compute_amount_per_model_chunk *= self.nano_batch_size * self.num_layer_per_model_chunk
         # split compute evenly (this may not lead to a valid allocation)
         compute_amount_per_reticle = compute_amount_per_model_chunk / self.num_reticle_per_model_chunk
@@ -716,22 +718,26 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
             wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
             total_latency = wse_evaluator.get_total_latency()
+            idle_latency = (self.layer_pipeline_size - 1) / (self.micro_batch_size // self.nano_batch_size) * total_latency
             if detailed_report:
                 util_report = wse_evaluator.profile_utilization()
                 final_report = {
                     'compute': util_report['compute'] * total_latency,
                     'inter_reticle': util_report['inter_reticle'] * total_latency,
+                    'idle': idle_latency,
                 }
         else:
             raw_report = {}
             for task_type, task_list in task_lists.items():
                 raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list)) if task_list else 0
+            logger.debug(raw_report)  # in non-overlapping model, you can see latency of each part
+            total_latency = sum(raw_report.values(), 0)
+            idle_latency = (self.layer_pipeline_size - 1) / (self.micro_batch_size // self.nano_batch_size) * total_latency
             final_report = {
                 'compute': raw_report['compute'],
                 'inter_reticle': raw_report['swap_weight'] + raw_report['output'] + raw_report['input'] + raw_report['allreduce'],
+                'idle': idle_latency,
             }
-            logger.debug(raw_report)  # in non-overlapping model, you can see latency of each part
-            total_latency = sum(raw_report.values(), 0)
 
         if detailed_report:
             return final_report

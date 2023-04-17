@@ -13,8 +13,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-# from dse4wse.model.wse_attn import WseTransformerRunner
-from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+from dse4wse.model.wse_attn import WseTransformerRunner
+# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 
@@ -25,7 +25,7 @@ def create_wafer_scale_engine(
     core_noc_bw: int,
     core_noc_vc: int,
     core_noc_buffer_size: int,
-    reticle_bw: int,
+    reticle_bw: float,  # ratio ...
     core_array_h: int,
     core_array_w: int,
     wafer_mem_bw: int,
@@ -49,7 +49,7 @@ def create_wafer_scale_engine(
     wse_config = {
         'reticle_array_height': reticle_array_h,
         'reticle_array_width': reticle_array_w,
-        'inter_reticle_bandwidth': reticle_bw * WSE_FREQUENCY,
+        'inter_reticle_bandwidth': reticle_bw * core_noc_bw * WSE_FREQUENCY,
         'dram_size': np.inf,  # ideally
         'dram_bandwidth': wafer_mem_bw * WSE_FREQUENCY,
         'dram_stacking_type': dram_stacking_type,
@@ -70,7 +70,7 @@ def create_evaluator(
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
     num_reticle_per_model_chunk: int = 1,
-    weight_streaming: bool = False,
+    weight_streaming: bool = True,
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
 
