@@ -79,6 +79,8 @@ class WseTransformerRunner():
         total_reticle = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width
         assert used_reticle <= total_reticle, f"Requiring {used_reticle} reticles but there's only {total_reticle}"
 
+        self.num_layer_per_model_chunk = (number_of_layers // model_parallel_size) // layer_pipeline_size
+
         # ZeRO settings, this setting is now fixed for simplicity
         self.zero_dp_os = zero_dp_os
         self.zero_dp_g = zero_dp_g
@@ -96,186 +98,42 @@ class WseTransformerRunner():
 
         # training settings 
         self.training_config = training_config
-        assert training_config
-
-        self._op_graph = self._build_op_graph()
-
-    def _build_op_graph(self) -> OpGraph:
-        """
-        Coarse-grained op-graph that one tensor parallel worker (1 or more reticles) could execute at a time.
-        Operators are splitted according to Megatron-LM
-        """
-        B, S, H = self.micro_batch_size, self.sequence_length, self.hidden_size
-        head = self.attention_heads
-
-        head_ = (head // self.tensor_parallel_size)
-        H_ = (H // self.tensor_parallel_size)
-        assert self.zero_dp_p is False  # no more zero_dp
-
-        # reuse op_graph data structure to record, which is unnecessary...
-        X = TensorInfo(
-            name='X',
-            shape=(B, S, H),
-            onnx_dtype=BFLOAT16,
-            kind='input',
-            inplace=False,
-        )
-        W_qkv = TensorInfo(
-            name='W_qkv',
-            shape=(H, 3 * H_),
-            onnx_dtype=BFLOAT16,
-            kind='weight',
-            inplace=True,
-        )
-        QKV = TensorInfo(
-            name='QKV',
-            shape=(B, S, 3 * H_),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        Q = TensorInfo(
-            name='Q',
-            shape=(B, head_, S, H // head),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        K = TensorInfo(
-            name='K',
-            shape=(B, head_, H // head, S),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        scores = TensorInfo(
-            name='scores',
-            shape=(B, head_, S, S),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        V = TensorInfo(
-            name='V',
-            shape=(B, head_, S, H // head),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        Y = TensorInfo(
-            name='Y',
-            shape=(B, head_, S, H // head),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        Y_reshape = TensorInfo(
-            name='Y_reshape',
-            shape=(B, S, H_),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        W_proj = TensorInfo(
-            name='W_proj',
-            shape=(H_, H),
-            onnx_dtype=BFLOAT16,
-            kind='weight',
-            inplace=True,
-        )
-        Z = TensorInfo(
-            name = 'Z',
-            shape=(B, S, H),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        X0_mlp = TensorInfo(
-            name='X0_mlp',
-            shape=(B, S, H),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        X1_mlp = TensorInfo(
-            name='X1_mlp',
-            shape=(B, S, 4 * H_),
-            onnx_dtype=BFLOAT16,
-            kind='activation',
-            inplace=False,
-        )
-        X2_mlp = TensorInfo(
-            name='X2_mlp',
-            shape=(B, S, H),
-            onnx_dtype=BFLOAT16,
-            kind='output',
-            inplace=False,
-        )
-        W0_mlp = TensorInfo(
-            name='W0_mlp',
-            shape=(H, 4 * H_),
-            onnx_dtype=BFLOAT16,
-            kind='weight',
-            inplace=True,
-        )
-        W1_mlp = TensorInfo(
-            name='W1_mlp',
-            shape=(4 * H_, H),
-            onnx_dtype=BFLOAT16,
-            kind='weight',
-            inplace=True,
-        )
-
-        linear_qkv = MatMulOperator(
-            name='linear_qkv',
-            op_type='Matmul',
-            input_tensors={'A': X, 'B': W_qkv},
-            output_tensors={'Y': QKV},
-        )
-        matmul_qk = MatMulOperator(
-            name='matmul_qk',
-            op_type='Matmul',
-            input_tensors={'A': Q, 'B': K},
-            output_tensors={'Y': scores},
-        )
-        matmul_scorev = MatMulOperator(
-            name='matmul_scorev',
-            op_type='Matmul',
-            input_tensors={'A': scores, 'B': V},
-            output_tensors={'Y': Y},
-        )
-        linear_proj = MatMulOperator(
-            name='linear_proj',
-            op_type='Matmul',
-            input_tensors={'A': Y_reshape, 'B': W_proj},
-            output_tensors={'Y': Z},
-        )
-        linear_wlp0 = MatMulOperator(
-            name='linear_mlp0',
-            op_type='Matmul',
-            input_tensors={'A': X0_mlp, 'B': W0_mlp},
-            output_tensors={'Y': X1_mlp},
-        )
-        linear_wlp1 = MatMulOperator(
-            name='linear_mlp1',
-            op_type='Matmul',
-            input_tensors={'A': X1_mlp, 'B': W1_mlp},
-            output_tensors={'Y': X2_mlp},
-        )
-
-        operators = [
-            linear_qkv,
-            matmul_qk,
-            matmul_scorev,
-            linear_proj,
-            linear_wlp0,
-            linear_wlp1
-        ]
-        op_graph = build_op_graph_from_operator_list(operators)
-        
-        return op_graph
     
     # helper functions for API
+
+    def _get_flops_per_layer(self, batch_size, inference=False):
+        """ Calculate FLOPS, copied from Cerebras-GPT appendix.
+        Embedding and final logits are ignored for simplicity
+        """
+        B = batch_size
+        d_model = self.hidden_size
+        seq_len = self.sequence_length
+        num_heads = self.attention_heads
+        key_size = d_model // num_heads
+
+        kqv_proj = 2 * 3 * seq_len * d_model * (key_size * num_heads)  # 2 for mul+add
+        kq_logits = 2 * (seq_len ** 2) * (key_size * num_heads)
+        softmax = 3 * (key_size * num_heads) * (seq_len ** 2)  # 3-passes
+        softmax_q_red = (seq_len ** 2) * (key_size * num_heads)
+        final_linear = 2 * seq_len * (key_size * num_heads) * d_model
+        sm_v_dot = 2 * (seq_len ** 2) * (key_size * num_heads)  # dot mul ! I've made a mistake before
+        attention_blocks = kqv_proj + kq_logits + softmax + softmax_q_red + final_linear + sm_v_dot
+
+        dense_blocks = 16 * seq_len * (d_model ** 2)
+
+        # Layer norms: 7 FLOPs/activation, 2 LNs per decoder block 
+        layer_norm_flops = 2 * 7 * (seq_len * d_model) 
+        # GeLU: estimate 20 FLOPs/activation, applied in FFN with 4x hidden dim 
+        gelu_flops = 20 * 4 * (seq_len * d_model)
+
+        total_flops = attention_blocks + dense_blocks + layer_norm_flops + gelu_flops
+        total_flops *= batch_size  # we might be adjusting nano batch size
+
+        if inference:
+            return total_flops
+        else:
+            return total_flops * 3  # fp + bp + rematerialization
+    
     
     def _get_ideal_compute_latency(self, forward: bool) -> float:
         """ Ideal compute latency of a pipeline stage 
@@ -283,21 +141,20 @@ class WseTransformerRunner():
         """
         assert self.zero_dp_p is False
 
-        total_latency = 0
         compute_power = self.wafer_scale_engine.reticle_compute_power * self.num_reticle_per_model_chunk
-
-        for op_name, op in self._op_graph.nodes(data='operator'):
-            assert op.op_type == "Matmul"
-            mac_count = op.get_fp_mac_count() if forward else op.get_bp_mac_count()
-            mac_count *= self.num_layer_per_pipeline_stage
-            total_latency += mac_count / compute_power
+        total_flops = self._get_flops_per_layer(self.nano_batch_size, forward)
+        total_latency = total_flops / compute_power
 
         return total_latency 
 
     def _get_bisection_bandwidth(self) -> int:
+        """ This is actually the maximum bandwidth 2d-torus could offer, not the conventional bisection bandwidth
+        """
         return 2 * (self.wafer_scale_engine.reticle_array_height + self.wafer_scale_engine.reticle_array_width) * self.wafer_scale_engine.inter_reticle_bandwidth
     
     def _get_input_latency(self, forward: bool) -> float:
+        """ Fetch 1 share of input, and broadcast to other tensor parallel model chunk
+        """
         tensors = self._op_graph.get_tensors()
         input_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X']])
         input_tensor_numel = (2 * input_tensor_numel) if not forward else input_tensor_numel  # rematerialization
@@ -305,7 +162,7 @@ class WseTransformerRunner():
         dram_access_size = input_tensor_numel * self.training_config.get_precision_size()
         dram_access_latency = dram_access_size / self.wafer_scale_engine.dram_bandwidth
 
-        inter_reticle_size = input_tensor_numel * self.training_config.get_precision_size() * (self.tensor_parallel_size - 1) * self.num_pipeline_stage_per_wafer
+        inter_reticle_size = input_tensor_numel * self.training_config.get_precision_size() * (self.tensor_parallel_size - 1)
         bisection_bandwidth = self._get_bisection_bandwidth()
         inter_reticle_latency = inter_reticle_size / bisection_bandwidth
 
