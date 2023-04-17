@@ -13,8 +13,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from dse4wse.model.wse_attn import WseTransformerRunner
-# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+# from dse4wse.model.wse_attn import WseTransformerRunner
+from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 
@@ -69,7 +69,8 @@ def create_evaluator(
     data_parallel_size: int = 1,
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
-    num_reticle_per_pipeline_stage: int = 1,
+    num_reticle_per_model_chunk: int = 1,
+    weight_streaming: bool = False,
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
 
@@ -93,7 +94,8 @@ def create_evaluator(
         wafer_scale_engine=wafer_scale_engine,
         training_config=default_training_config,
         inter_wafer_bandwidth=default_inter_wafer_bandwidth,
-        num_reticle_per_pipeline_stage=num_reticle_per_pipeline_stage,
+        num_reticle_per_model_chunk=num_reticle_per_model_chunk,
+        weight_streaming=weight_streaming,
     )
 
     return wse_transformer_runner
@@ -109,7 +111,7 @@ def nohup_decorator(func):
             return np.inf
     return wrapper
 
-@nohup_decorator
+# @nohup_decorator
 def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization'):
     """ Evaluator API for DSE framework. 
     """
@@ -142,15 +144,15 @@ def design_space_exploration():
         test_index = random.randint(0, len(df.index))
         test_design_point = df.loc[test_index].to_dict()
         test_model_parameters = {
-            "attention_heads": 96,
-            "hidden_size": 12288,
-            "sequence_length": 2048,
-            "number_of_layers": 160,
-            "mini_batch_size": 3072,
+            "attention_heads": 12,
+            "hidden_size": 768,
+            "sequence_length": 512,
+            "number_of_layers": 24,
+            "mini_batch_size": 512,
             "micro_batch_size": 32,
-            "tensor_parallel_size": 8,
-            "model_parallel_size": 80,
-            "num_reticle_per_pipeline_stage": 1,
+            "tensor_parallel_size": 1,
+            "model_parallel_size": 24,
+            "num_reticle_per_model_chunk": 10,
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 

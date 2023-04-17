@@ -537,6 +537,9 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         self.__virtual_dram_port_counter += 1
         return vdp
     
+    # TODO: rewrite this part with allgather
+    # of course this version is fine, so don't worry
+    
     def _assign_input_reticle_task(self, inference: bool, rematerialization=False) -> List[BaseReticleTask]:
         """ Reticle tasks for input
         """
@@ -613,69 +616,66 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             task_list += self._assign_output_reticle_task(inference=True, rematerialization=True)
 
         return task_list
-
     
     def __assign_swap_weight_reticle_task(self, inference: bool) -> List[BaseReticleTask]:
         if not self.weight_streaming:
             return []
 
         # weight size for one reticle
-        # this split is very naive, and may not lead to a valid split
-        tensors = self._op_graph.get_tensors()
-        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
-        weight_tensor_numel = weight_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk
-        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
+        # split all weight evenly (this may not lead to a valid allocation)
+        weight_numel_per_model_chunk = self._get_weight_numel_per_model_chunk()
+        swapped_weight_numel = weight_numel_per_model_chunk / self.num_reticle_per_model_chunk
+        if not inference: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
+
+        repeated_times = ceil(self.micro_batch_size / self.nano_batch_size)
         
         task_list = []
 
         for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
             virtual_dram_port = self.__alloc_new_dram_port()
-            fp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', weight_tensor_size, repeated_times=self.micro_batch_size)
+            fp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', swapped_weight_size, repeated_times=repeated_times)
             task_list.append(fp_reticle_task)
-            if not forward:
+            if not inference:
                 # write grad back to DRAM
-                bp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', weight_tensor_size, repeated_times=self.micro_batch_size)
+                bp_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', swapped_weight_size, repeated_times=repeated_times)
                 task_list.append(bp_reticle_task)
 
         return task_list
-    
-    def __assign_swap_activation_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
-        tensors = self._op_graph.get_tensors()
-        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
-        activation_tensor_numel = activation_tensor_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk / self.micro_batch_size
-        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
-        activation_tensor_size = activation_tensor_size * 2 if not forward else activation_tensor_size 
 
-        task_list = []
-
-        for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
-            virtual_dram_port = self.__alloc_new_dram_port()
-            write_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'write', activation_tensor_size, repeated_times=self.micro_batch_size)
-            read_reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', activation_tensor_size, repeated_times=self.micro_batch_size)
-            task_list.append(read_reticle_task)
-            task_list.append(write_reticle_task)
-
-        return task_list
-
-    def __assign_compute_reticle_task(self, forward: bool) -> List[BaseReticleTask]:
+    def __assign_compute_reticle_task(self, inference: bool) -> List[BaseReticleTask]:
         # compute size for one reticle
-        compute_amount = sum([op.get_fp_mac_count() if forward else op.get_bp_mac_count() + op.get_fp_mac_count() 
-                              for name, op in self._op_graph.nodes(data='operator')]) / self.micro_batch_size
-        compute_amount = compute_amount * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk
+        if inference:
+            compute_amount_per_model_chunk = self._get_flops_per_seq_per_layer(inference=True)
+        else:
+            compute_amount_per_model_chunk = self._get_flops_per_seq_per_layer(inference=True) \
+                                           + self._get_flops_per_seq_per_layer(inference=False)
+
+        compute_amount_per_model_chunk *= self.nano_batch_size * self.num_layer_per_model_chunk
+        # split compute evenly (this may not lead to a valid allocation)
+        compute_amount_per_reticle = compute_amount_per_model_chunk / self.num_reticle_per_model_chunk
+
+        repeated_times = ceil(self.micro_batch_size / self.nano_batch_size)
 
         task_list = []
 
         for virtual_reticle_id, parallel_index in self.virtual_reticle_id_2_parallel_index.items():
-            compute_task = ComputeReticleTask(virtual_reticle_id, compute_amount, repeated_times=self.micro_batch_size)
+            compute_task = ComputeReticleTask(virtual_reticle_id, compute_amount_per_reticle, repeated_times=repeated_times)
             task_list.append(compute_task)
         
         return task_list
     
-    def __assign_allreduce_reticle_task(self, forward: bool):
-        tensors = self._op_graph.get_tensors()
-        allreduce_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in (['Z', 'X2_mlp'] if forward else ['X', 'X0_mlp', 'Z', 'X2_mlp'])])
-        allreduce_numel = allreduce_numel * self.num_layer_per_pipeline_stage / self.num_reticle_per_model_chunk / self.micro_batch_size
-        allreduce_numel = allreduce_numel * 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size
+    def __assign_allreduce_reticle_task(self, inference: bool):
+        if self.tensor_parallel_size == 1:
+            return []
+        
+        repeated_times = ceil(self.micro_batch_size / self.nano_batch_size)
+
+        allreduce_numel_per_model_chunk = self.nano_batch_size * self.sequence_length * self.hidden_size * 2 * self.num_layer_per_model_chunk  # attn, ffn
+        # split allreduce evenly (this definitely does not lead to a valid allocation)
+        if not inference: allreduce_numel_per_model_chunk *= 2
+        allreduce_numel_per_reticle = allreduce_numel_per_model_chunk / self.num_reticle_per_model_chunk
+        allreduce_numel = allreduce_numel_per_reticle * 2 * (self.tensor_parallel_size - 1) / self.tensor_parallel_size  # normalize to single reticle amount
         allreduce_size = allreduce_numel * self.training_config.get_precision_size()
 
         task_list = []
@@ -685,7 +685,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             peer_tensor_parallel_index = (tensor_parallel_index + 1) % self.tensor_parallel_size
             peer_parallel_index = (pipeline_stage_index, peer_tensor_parallel_index, worker_reticle_index)
             peer_virtual_reticle_id = self.parallel_index_2_virtual_reticle_id[peer_parallel_index]
-            allreduce_task = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', allreduce_size, repeated_times=self.micro_batch_size)
+            allreduce_task = PeerAccessReticleTask(virtual_reticle_id, peer_virtual_reticle_id, 'read', allreduce_size, repeated_times=repeated_times)
             task_list.append(allreduce_task)
         
         return task_list
@@ -695,22 +695,20 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
         return wse_evaluator.get_total_latency()
     
-    def get_propagation_latency(self, forward=True, detailed_report=False):
-        input_task_list = self._assign_input_reticle_task(forward)
-        need_to_swap_weight, need_to_swap_activation = self.get_sram_utilization(forward)
-        swap_weight_task_list = self.__assign_swap_weight_reticle_task(forward) if need_to_swap_weight else []
-        swap_activation_task_list = self.__assign_swap_activation_reticle_task(forward) if need_to_swap_activation else []
-        compute_task_list = self.__assign_compute_reticle_task(forward)
-        allreduce_task_list = self.__assign_allreduce_reticle_task(forward) if self.tensor_parallel_size != 1 else []
+    def get_propagation_latency(self, inference: bool, detailed_report=False):
+        input_task_list = self._assign_input_reticle_task(inference=inference)
+        output_task_list = self._assign_output_reticle_task(inference=inference)
+        swap_weight_task_list = self.__assign_swap_weight_reticle_task(inference=inference)
+        compute_task_list = self.__assign_compute_reticle_task(inference=inference)
+        allreduce_task_list = self.__assign_allreduce_reticle_task(inference=inference)
 
         task_lists = {
             'input': input_task_list,
+            'output': output_task_list,
             'swap_weight': swap_weight_task_list,
-            'swap_activation': swap_activation_task_list,
             'compute': compute_task_list,
             'allreduce': allreduce_task_list,
         }
-        # TODO: add output tasks
 
         if self.is_overlap:
             task_list = sum(task_lists.values(), [])
@@ -730,7 +728,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                 raw_report[task_type] = self.__run_wse_task(ListWaferTask(task_list)) if task_list else 0
             final_report = {
                 'compute': raw_report['compute'],
-                'inter_reticle': raw_report['swap_weight'] + raw_report['swap_activation'] + raw_report['input'] + raw_report['allreduce'],
+                'inter_reticle': raw_report['swap_weight'] + raw_report['output'] + raw_report['input'] + raw_report['allreduce'],
             }
             logger.debug(raw_report)  # in non-overlapping model, you can see latency of each part
             total_latency = sum(raw_report.values(), 0)
