@@ -199,7 +199,7 @@ class WseTransformerRunner():
 
         x = seq_len * d_model
         kqv = 3 * seq_len * (key_size * num_heads)
-        kq_logits = softmax = (seq_len ** 2) * (key_size * num_heads)
+        kq_logits = softmax = (seq_len ** 2) * (num_heads)
         sm_v_dot = seq_len * (key_size * num_heads)
         final_linear = seq_len * d_model
 
@@ -220,11 +220,20 @@ class WseTransformerRunner():
     # Calculate latency relevant to each model chunk
 
     def _get_input_latency(self, inference: bool) -> float:
-        """ This latency is dominated by fetching 1 share of input, 
-            and broadcasting to other tensor parallel model chunk.
+        """ Fetching input activation / grad onto the wafer
+
+        Weight streaming: 
+        - fp: load 1 micro batch size input
+        - bp: load 1 micro batch size grad, and activation checkpoints of every layer
+        Layer pipelining: 
+        - fp: load 1 micro batch size input
+        - bp: load 1 micro batch size input & grad
         """
         input_tensor_numel = self.micro_batch_size * self.sequence_length * self.hidden_size
-        if not inference: input_tensor_numel *= 2  # rematerialization
+        if self.weight_streaming:
+            if not inference: input_tensor_numel *= (1 + self.num_layer_per_model_chunk)
+        else:
+            if not inference: input_tensor_numel *= 2
 
         dram_access_size = input_tensor_numel * self.training_config.get_precision_size()
         dram_access_latency = dram_access_size / self.wafer_scale_engine.dram_bandwidth
@@ -236,11 +245,34 @@ class WseTransformerRunner():
         total_latency = dram_access_latency + inter_reticle_latency
         return total_latency
     
+    def _get_output_latency(self, inference: bool) -> float:
+        """ Writing activation / grad back to DRAM
+
+        Weight streaming: 
+        - fp: write every layer's output
+        - bp: write 1 micro batch size grad
+        Layer pipelining:
+        - fp: write 1 micro batch output
+        - bp: write 1 micro batch grad 
+        """
+        output_tensor_numel = self.micro_batch_size * self.sequence_length * self.hidden_size
+        if self.weight_streaming:
+            if inference: output_tensor_numel *= self.num_layer_per_model_chunk
+
+        dram_access_size = inter_reticle_size = output_tensor_numel * self.training_config.get_precision_size()
+        dram_access_latency = dram_access_size / self.wafer_scale_engine.dram_bandwidth
+        bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
+        inter_reticle_latency = inter_reticle_size / bisection_bandwidth
+
+        total_latency = dram_access_latency + inter_reticle_latency
+        return total_latency
+
     def _get_swap_weight_latency(self, inference: bool) -> float:
         """
-        Estimation on swapping weight in and out of DRAM.
+        Estimation on swapping weight in and out of DRAM, only for weight streaming mode
         """
-        assert self.weight_streaming
+        if not self.weight_streaming:
+            return 0
         assert self.nano_batch_size, "You should set nano batch size first"
 
         weight_numel_per_model_chunk = self._get_weight_numel_per_model_chunk()
@@ -322,8 +354,10 @@ class WseTransformerRunner():
                 # only store 1 layer's activation
                 act_size = max(attn_act_size, ffn_act_size) * nano_batch_size
             else:
-                # buffer all activations
-                act_size = (attn_act_size + ffn_act_size) * self.num_layer_per_model_chunk * self.nano_batch_size
+                # buffer all activations -- is impossible for very large models
+                # we allow rematerialize activation layer by layer
+                # in this way, we maximize reuse of weight
+                act_size = (attn_act_size + ffn_act_size) * self.nano_batch_size
             return act_size < sram_size  # save some space for weight
         else:  # layer pipelining
             weight_size = self._get_weight_numel_per_model_chunk()
@@ -336,22 +370,21 @@ class WseTransformerRunner():
                 checkpoint_size = layer_pipeline_size * (layer_pipeline_size * nano_batch_size ) * self.sequence_length * self.hidden_size
                 return checkpoint_size + weight_size + act_size <= sram_size
     
-    def get_propagation_latency(self, forward=True, detailed_report=False):
+    def get_propagation_latency(self, inference, detailed_report=False):
         """ Only consider events WITHIN a reticle.
         Naive version doesn't consider overlapping, but lp_solver version does
         """
-        need_to_swap_weight, need_to_swap_activation = self.get_sram_utilization(forward)
-        input_latency = self._get_input_latency(forward=forward)
-        swap_weight_latency = self._get_swap_weight_latency(forward=forward) if need_to_swap_weight else 0 
-        swap_activation_latency = self._get_swap_activation_latency(forward=forward) if need_to_swap_activation else 0 
-        compute_latency = self._get_compute_latency(forward=forward)
-        activation_allreduce_latency = self._get_activation_allreduce_latency(forward=forward)
+        input_latency = self._get_input_latency(inference=inference)
+        swap_weight_latency = self._get_swap_weight_latency(inference=inference)
+        compute_latency = self._get_compute_latency(inference=inference)
+        activation_allreduce_latency = self._get_activation_allreduce_latency(inference=inference)
+        output_latency = self._get_output_latency(inference=inference)
 
-        total_latency = compute_latency + activation_allreduce_latency + swap_weight_latency + swap_activation_latency + input_latency
+        total_latency = compute_latency + activation_allreduce_latency + swap_weight_latency + input_latency + output_latency
         if detailed_report:
             return {
                 'compute': compute_latency,
-                'inter_reticle': input_latency + activation_allreduce_latency + swap_weight_latency + swap_activation_latency,
+                'inter_reticle': input_latency + activation_allreduce_latency + swap_weight_latency,
             }
         else:
             return total_latency
@@ -364,41 +397,27 @@ class WseTransformerRunner():
         assert self.zero_dp_p is False
 
         # weight / grad / optimizer state on the wafer
-        weight_tensors = self._op_graph.get_tensors(kind=['weight'])
-        weight_tensor_numel = sum([tensor.numel() for tensor in weight_tensors.values()])
-        weight_tensor_numel *= self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer
-
+        weight_tensor_numel = self._get_weight_numel_per_model_chunk() * self.tensor_parallel_size
         weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
-
         weight_grad_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
         if self.zero_dp_g: weight_grad_tensor_size /= self.data_parallel_size
-
         weight_optimizer_state_tensor_size = weight_tensor_numel * self.training_config.get_optimizer_state_size()
         if self.zero_dp_os: weight_optimizer_state_tensor_size /= self.data_parallel_size
 
-        # 1 share of micro batch's activation & grad
-        # debug: activation should be finely selected in case of repeated counting
-        activation_tensors = self._op_graph.get_tensors(kind=['input', 'activation', 'output'])
-        activation_tensor_numel = sum([tensor.numel() for tensor in activation_tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
-        activation_tensor_numel *= self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer
-        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size() * 2
-        # logger.warning("Activation tensors will no longer be stored in DRAM in future version.")
-        activation_tensor_size = 0
-
-        # 1 share of mini batch's input checkpoint
-        checkpoint_tensors = self._op_graph.get_tensors(kind=['input'])
-        checkpoint_tensor_numel = sum([tensor.numel() for tensor in checkpoint_tensors.values()])
-        checkpoint_tensor_numel *= self.num_pipeline_stage_per_wafer * (self.mini_batch_size / self.micro_batch_size)
+        # input checkpoint for model parallel, 1F1B
+        checkpoint_tensor_numel = self.model_parallel_size * self.micro_batch_size * self.sequence_length * self.hidden_size
+        if self.weight_streaming: checkpoint_tensor_numel *= self.num_layer_per_model_chunk
         checkpoint_tensor_size = checkpoint_tensor_numel * self.training_config.get_precision_size()
 
-        utilized_memory = weight_tensor_size + weight_grad_tensor_size + weight_optimizer_state_tensor_size + activation_tensor_size + checkpoint_tensor_size
+        # activation tensor no longer goes to DRAM
+
+        utilized_memory = weight_tensor_size + weight_grad_tensor_size + weight_optimizer_state_tensor_size + checkpoint_tensor_size
         total_memory = self.wafer_scale_engine.dram_size
 
         logger.info("Summary for checking DRAM utilization:")
         logger.info(f"weight                  : {int(weight_tensor_size / 1e9):>15d} GB ({weight_tensor_size / total_memory:.2%})")
         logger.info(f"weight's grad           : {int(weight_grad_tensor_size / 1e9):>15d} GB ({weight_grad_tensor_size/ total_memory:.2%})")
         logger.info(f"weight's optimizer state: {int(weight_optimizer_state_tensor_size / 1e9):>15d} GB ({weight_optimizer_state_tensor_size/ total_memory:.2%})")
-        logger.info(f"activation & grad       : {int(activation_tensor_size / 1e9):>15d} GB ({activation_tensor_size / total_memory:.2%})")
         logger.info(f"checkpoint              : {int(checkpoint_tensor_size / 1e9):>15d} GB ({checkpoint_tensor_size / total_memory:.2%})")
         logger.info(f"Total utilized DRAM     : {int(utilized_memory / 1e9):>15d} GB ({utilized_memory / total_memory:.2%})")
 
