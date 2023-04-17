@@ -149,14 +149,14 @@ class WseTransformerRunner():
         else:
             return total_flops * 3  # fp + bp + rematerialization
     
-    def _get_ideal_compute_latency(self, forward: bool) -> float:
+    def _get_ideal_compute_latency(self, inference: bool) -> float:
         """ Ideal compute latency of a pipeline stage 
         Assume 100% compute resource utilization.
         """
         assert self.zero_dp_p is False
 
         compute_power = self.wafer_scale_engine.reticle_compute_power * self.num_reticle_per_model_chunk
-        total_flops = self._get_flops_per_model_chunk(self.nano_batch_size, self.num_layer_per_model_chunk, forward)
+        total_flops = self._get_flops_per_model_chunk(self.nano_batch_size, self.num_layer_per_model_chunk, inference)
         total_latency = total_flops / compute_power
 
         return total_latency 
@@ -176,12 +176,12 @@ class WseTransformerRunner():
     
     # Calculate latency of each part
 
-    def _get_input_latency(self, forward: bool) -> float:
+    def _get_input_latency(self, inference: bool) -> float:
         """ This latency is dominated by fetching 1 share of input, 
             and broadcasting to other tensor parallel model chunk.
         """
         input_tensor_numel = self.nano_batch_size * self.sequence_length * self.hidden_size
-        if not forward: input_tensor_numel *= 2  # rematerialization
+        if not inference: input_tensor_numel *= 2  # rematerialization
 
         dram_access_size = input_tensor_numel * self.training_config.get_precision_size()
         dram_access_latency = dram_access_size / self.wafer_scale_engine.dram_bandwidth
@@ -193,14 +193,14 @@ class WseTransformerRunner():
         total_latency = dram_access_latency + inter_reticle_latency
         return total_latency
     
-    def _get_swap_weight_latency(self, forward: bool) -> float:
+    def _get_swap_weight_latency(self, inference: bool) -> float:
         """
         Estimation on swapping weight in and out of DRAM.
         """
         weight_numel_per_model_chunk = self._get_weight_size_per_model_chunk(self.num_layer_per_model_chunk)
         weight_numel_per_wafer = weight_numel_per_model_chunk * self.tensor_parallel_size * self.layer_pipeline_size
         swapped_weight_numel = ceil(self.micro_batch_size / self.nano_batch_size) * weight_numel_per_wafer
-        if not forward: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        if not inference: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
         swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
 
         bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
@@ -211,76 +211,47 @@ class WseTransformerRunner():
 
         return total_latency
     
-    def _get_swap_activation_latency(self, forward: bool) -> float:
-        """
-        Estimation on swapping activation in and out of DRAM.
-        """
-        tensors = self._op_graph.get_tensors()
-        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
-        activation_tensor_numel = activation_tensor_numel * self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # on the wafer
-        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
-        activation_tensor_size = activation_tensor_size * 2  # 1 read + 1 write
-        activation_tensor_size = activation_tensor_size * 2 if not forward else activation_tensor_size  # activation + grad
-
-        bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
-        return activation_tensor_size / bisection_bandwidth
+    def _get_compute_latency(self, inference: bool) -> float:
+        return self._get_ideal_compute_latency(inference)
     
-    def _get_compute_latency(self, forward: bool) -> float:
-        if forward:
-            return self._get_ideal_compute_latency(forward)
-        else:
-            return self._get_ideal_compute_latency(True) + self._get_ideal_compute_latency(False)
-    
-    def _get_activation_allreduce_latency(self, forward: bool) -> float:
+    def _get_activation_allreduce_latency(self, inference: bool) -> float:
         """
         Estimation on collective communication latency of #tensor_parallel_size reticles
         This is a naive version where each link provides 100% bandwidth
         """
         T = self.tensor_parallel_size
-        allreduce_bandwidth = self.wafer_scale_engine.inter_reticle_bandwidth
-        tensors = self._op_graph.get_tensors()
+        allreduce_bandwidth = self.wafer_scale_engine.inter_reticle_bandwidth * self.num_reticle_per_model_chunk * T  # ring-allreduce
 
-        # consider one ring of #T tensors
-        # this is already the full size
-        if forward:
-            allreduce_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['Z', 'X2_mlp']])
-        else:
-            allreduce_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['X', 'X0_mlp', 'Z', 'X2_mlp']]) # rematerialization
+        allreduce_numel_per_model_chunk = self.nano_batch_size * self.sequence_length * self.hidden_size * 2 * self.num_layer_per_model_chunk  # attn, ffn
+        allreduce_numel = allreduce_numel_per_model_chunk * 2 * (T - 1)
+        if not inference: allreduce_numel *= 2
+        allreduce_size = allreduce_numel * self.training_config.get_precision_size()
+
+        allreduce_latency = allreduce_size / allreduce_bandwidth
         
-        allreduce_size *= self.num_layer_per_pipeline_stage # 1 share of activation of a pipeline stage
-        # needless to consider for zero_dp_p
-        allreduce_latency = 2 * (T-1) / T * allreduce_size / allreduce_bandwidth
         return allreduce_latency
 
     def _get_weight_update_latency(self) -> float:
         """ This is completely transmission-bottlenecked, so we only consider allreduce latency between data parallel workers
         """
-        inter_wafer_bandwidth = self.inter_wafer_bandwidth
+        D = self.data_parallel_size
+        ring_collective_bandwidth = self.inter_wafer_bandwidth * D
 
-        weight_tensors = self._op_graph.get_tensors(kind=['weight'])
-        weight_tensor_total_numel = sum([tensor.numel() for tensor in weight_tensors.values()])
-        weight_tensor_total_numel *= self.tensor_parallel_size * self.num_layer_per_pipeline_stage * self.num_pipeline_stage_per_wafer  # total shares on wafer
+        weight_numel_per_model_chunk = self._get_weight_size_per_model_chunk(self.num_layer_per_model_chunk)
+        weight_numel_per_wafer = weight_numel_per_model_chunk * self.tensor_parallel_size * self.layer_pipeline_size
 
         # reduce scatter 1 share of grad and all gather 1 share of weight
-        weight_size = grad_size =  weight_tensor_total_numel * self.training_config.get_precision_size()
-        comm_volume = weight_size + grad_size
-        return comm_volume / inter_wafer_bandwidth
+        weight_size = grad_size =  weight_numel_per_wafer * self.training_config.get_precision_size()
+        ring_collective_size = (D - 1) * (weight_size + grad_size)
     
-    def _get_activation_cross_pipeline_stage_latency(self, forward=True, connect_type='wafer'):
-        bandwidth = None
-        tensors = self._op_graph.get_tensors()
+        total_latency = ring_collective_size / ring_collective_bandwidth
+        return total_latency
 
-        if connect_type == 'wafer':
-            bandwidth = self.inter_wafer_bandwidth
-        elif connect_type == 'reticle':
-            bandwidth = self.wafer_scale_engine.inter_reticle_bandwidth
-        else:
-            raise NotImplementedError
-        if forward:
-            comm_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['X']])
-        else:
-            comm_size = sum([tensor.size() for tensor in tensors.values() if tensor.name in ['X2_mlp']])
-        
+    def _get_activation_cross_pipeline_stage_latency(self):
+        comm_size = self.micro_batch_size * self.sequence_length * self.hidden_size  # same for fp & bp
+
+        bandwidth = self.inter_wafer_bandwidth
+
         comm_latency = comm_size / bandwidth
         return comm_latency
     
