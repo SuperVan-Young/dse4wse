@@ -1,10 +1,10 @@
 
-from math import ceil
-
 from typing import Dict, Tuple, Union, List
+from math import ceil
 from itertools import product
 from functools import reduce
 import networkx as nx
+import numpy as np
 from copy import deepcopy
 
 from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
@@ -77,6 +77,8 @@ class WseTransformerRunner():
         self.num_layer_per_model_chunk = (self.number_of_layers // self.model_parallel_size)
 
         # intra-model-chunk params, transparent to users
+        # Best exec params differ from training to inference, so we find optimal setting
+        # everytime we call on perf API.
         self.nano_batch_size = None
         self.layer_pipeline_size = None
 
@@ -100,19 +102,36 @@ class WseTransformerRunner():
         # training settings 
         self.training_config = training_config
     
-    # TODO: find optimal nano batch size and layer pipeline stage, and remove these API
-    def _set_nano_batch_size(self, nano_batch_size) -> None:
-        """ reset nano batch size and check feasibility
-        """
-        assert nano_batch_size <= self.micro_batch_size
-        self.nano_batch_size = nano_batch_size
-
-    def _set_layer_pipeline_size(self, layer_pipeline_size) -> None:
-        """ reset layer pipeline size and relevant params, and check feasibility
-        """
-        # check division feasibility
-        assert (self.number_of_layers // self.model_parallel_size) % layer_pipeline_size == 0
-        self.layer_pipeline_size = layer_pipeline_size
+    def _find_best_intra_model_chunk_exec_params(self, inference: bool) -> None:
+        if self.weight_streaming:
+            self.nano_batch_size = None
+            self.layer_pipeline_size = 1
+            for nano_batch_size in sorted(factoring(self.micro_batch_size), reverse=True):
+                try:
+                    assert self.get_sram_utilization(inference, nano_batch_size, 1)
+                except AssertionError:
+                    continue
+                self.nano_batch_size = nano_batch_size  # maximum nano batch size you can find
+                break
+            assert self.nano_batch_size
+        else:  # layer pipelining
+            self.nano_batch_size = None
+            self.layer_pipeline_size = None
+            min_bubble_rate = np.inf
+            for nano_batch_size, layer_pipeline_size in product(factoring(self.micro_batch_size), factoring(self.num_layer_per_model_chunk)):
+                try:
+                    assert self.get_sram_utilization(inference, nano_batch_size, layer_pipeline_size)
+                except AssertionError:
+                    continue
+                # GPipe's pipeline bubble
+                m = self.micro_batch_size // self.nano_batch_size
+                p = layer_pipeline_size
+                bubble_rate = (p - 1) / m
+                if bubble_rate < min_bubble_rate:
+                    self.nano_batch_size = nano_batch_size
+                    self.layer_pipeline_size = layer_pipeline_size
+            assert self.nano_batch_size
+            assert self.layer_pipeline_size
 
     # helper functions for API
 
