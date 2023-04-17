@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dse4wse.model.wse_attn import WseTransformerRunner
-# from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 
@@ -59,6 +59,7 @@ def create_wafer_scale_engine(
     return wafer_scale_engine
 
 def create_evaluator(
+    use_high_fidelity: bool,  # 选一下用哪个fidelity！
     wafer_scale_engine: WaferScaleEngine,
     attention_heads: int,
     hidden_size: int,
@@ -81,7 +82,9 @@ def create_evaluator(
     default_training_config = TrainingConfig()
     default_inter_wafer_bandwidth = None
 
-    wse_transformer_runner = WseTransformerRunner(
+    transformer_runner = ReticleFidelityWseTransformerRunner if use_high_fidelity else WseTransformerRunner
+
+    wse_transformer_runner = transformer_runner(
         attention_heads=attention_heads,
         hidden_size=hidden_size,
         sequence_length=sequence_length,
@@ -112,14 +115,14 @@ def nohup_decorator(func):
     return wrapper
 
 # @nohup_decorator
-def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization'):
+def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization', use_high_fidelity: bool=False):
     """ Evaluator API for DSE framework. 
     """
     logger.info(f"Design point: {design_point}")
     logger.info(f"Model parameters: {model_parameters}")
 
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
-    evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
+    evaluator = create_evaluator(use_high_fidelity, wafer_scale_engine, **model_parameters)
 
     result = None
     if metric == 'throughput':
