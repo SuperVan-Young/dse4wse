@@ -70,7 +70,7 @@ def create_evaluator(
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
     num_reticle_per_model_chunk: int = 1,
-    weight_streaming: bool = True,
+    weight_streaming: bool = False,
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
 
