@@ -100,7 +100,7 @@ class WseTransformerRunner():
         # training settings 
         self.training_config = training_config
     
-    # TODO: find optimal nano batch size and layer pipeline stage
+    # TODO: find optimal nano batch size and layer pipeline stage, and remove these API
     def _set_nano_batch_size(self, nano_batch_size) -> None:
         """ reset nano batch size and check feasibility
         """
@@ -284,28 +284,38 @@ class WseTransformerRunner():
         comm_latency = comm_size / bandwidth
         return comm_latency
     
-    def get_sram_utilization(self, inference: bool) -> bool:
+    def get_sram_utilization(self, inference: bool, nano_batch_size: int = None, layer_pipeline_size: int = None) -> bool:
         """ Check if SRAM could hold a model chunk
         """
         sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk
+        precision = self.training_config.get_precision_size()
 
-        # for simplicity, we assume that we use feed 1 sequence at a time
-        # if in this case, weight cannot stay on chip, it's just too bad.
-        activation_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['X', 'QKV', 'scores', 'Y', 'Z', 'X0_mlp', 'X1_mlp', 'X2_mlp']])
-        activation_tensor_numel = activation_tensor_numel / self.micro_batch_size * self.num_layer_per_pipeline_stage
-        activation_tensor_size = activation_tensor_numel * self.training_config.get_precision_size()
-        activation_tensor_size = (activation_tensor_size * 2) if not forward else activation_tensor_size
+        if nano_batch_size is None: nano_batch_size = self.nano_batch_size
+        if layer_pipeline_size is None: layer_pipeline_size = self.layer_pipeline_size
+        assert nano_batch_size
+        assert layer_pipeline_size
 
-        weight_tensor_numel = sum([tensor.numel() for tensor in tensors.values() if tensor.name in ['W_qkv', 'W_proj', 'W0_mlp', 'W1_mlp']])
-        weight_tensor_numel *= self.num_layer_per_pipeline_stage
-        weight_tensor_size = weight_tensor_numel * self.training_config.get_precision_size()
-        weight_tensor_size = (weight_tensor_size * 2) if not forward else weight_tensor_size
-
-        # logger.info(f"weight size: {int(weight_tensor_size/1e6)} MB, activation size: {int(activation_tensor_size/1e6)} MB, SRAM size: {int(sram_size/1e6)} MB")
-        if activation_tensor_size > sram_size:
-            return True, True
-
-        return (activation_tensor_size + weight_tensor_size > sram_size), False
+        attn_act_size = self._get_attn_activation_numel_per_model_chunk_per_seq_per_layer() * precision
+        ffn_act_size = self._get_ffn_activation_numel_per_model_chunk_per_seq_per_layer() * precision
+        if self.weight_streaming:
+            assert layer_pipeline_size == 1, "You shouldn't set layer pipelining on weight streaming mode!"
+            if inference:
+                # only store 1 layer's activation
+                act_size = max(attn_act_size, ffn_act_size) * nano_batch_size
+            else:
+                # buffer all activations
+                act_size = (attn_act_size + ffn_act_size) * self.num_layer_per_model_chunk * self.nano_batch_size
+            return act_size < sram_size  # save some space for weight
+        else:  # layer pipelining
+            weight_size = self._get_weight_numel_per_model_chunk()
+            # each pipeline stage hold one complete share of activation
+            act_size = layer_pipeline_size * nano_batch_size * (attn_act_size + layer_pipeline_size)
+            if inference:
+                return weight_size + act_size <= sram_size
+            else:
+                # each layer pipeline stage need to buffer the same number of nano batch as the depth of pipeline
+                checkpoint_size = layer_pipeline_size * (layer_pipeline_size * nano_batch_size ) * self.sequence_length * self.hidden_size
+                return checkpoint_size + weight_size + act_size <= sram_size
     
     def get_propagation_latency(self, forward=True, detailed_report=False):
         """ Only consider events WITHIN a reticle.
