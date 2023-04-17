@@ -25,7 +25,7 @@ def create_wafer_scale_engine(
     core_noc_bw: int,
     core_noc_vc: int,
     core_noc_buffer_size: int,
-    reticle_bw: float,  # ratio ...
+    reticle_bw: float,  # ratio ... # 注意检查一下设计点，看看给的是相对带宽还是绝对带宽！
     core_array_h: int,
     core_array_w: int,
     wafer_mem_bw: int,
@@ -49,7 +49,7 @@ def create_wafer_scale_engine(
     wse_config = {
         'reticle_array_height': reticle_array_h,
         'reticle_array_width': reticle_array_w,
-        'inter_reticle_bandwidth': reticle_bw * core_noc_bw * WSE_FREQUENCY,
+        'inter_reticle_bandwidth': reticle_bw * core_noc_bw * WSE_FREQUENCY,  # 如果是相对带宽，要做一个转换！
         'dram_size': np.inf,  # ideally
         'dram_bandwidth': wafer_mem_bw * WSE_FREQUENCY,
         'dram_stacking_type': dram_stacking_type,
@@ -69,8 +69,8 @@ def create_evaluator(
     data_parallel_size: int = 1,
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
-    num_reticle_per_model_chunk: int = 1,
-    weight_streaming: bool = True,
+    num_reticle_per_model_chunk: int = 1,  # 改名字了，记得查看一下！
+    weight_streaming: bool = True,  # 新加的接口！
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
 
