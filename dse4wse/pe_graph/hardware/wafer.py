@@ -38,6 +38,20 @@ class WaferScaleEngine():
     def reticle_compute_power(self):
         return Reticle.get_compute_power(self.reticle_config)
     
+    def get_bisection_bandwidth(self):
+        """ This is actually the maximum bandwidth 2d-torus could offer, not the conventional bisection bandwidth
+        """
+        return 2 * (self.reticle_array_height + self.reticle_array_width) * self.inter_reticle_bandwidth
+    
+    def get_total_dram_bandwidth(self):
+        if self.dram_stacking_type == '2d':
+            num_dram_port = 2 * (self.reticle_array_height + self.reticle_array_width)
+        elif self.dram_stacking_type == '3d':
+            num_dram_port = self.reticle_array_height * self.reticle_array_width
+        else:
+            raise NotImplementedError
+        return num_dram_port * self.dram_bandwidth
+    
     def __build_reticle_graph(self):
         # build graph skeleton
         H, W = self.reticle_array_height, self.reticle_array_width

@@ -13,8 +13,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-# from dse4wse.model.wse_attn import WseTransformerRunner
-from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner as WseTransformerRunner
+from dse4wse.model.wse_attn import WseTransformerRunner
+from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
 
@@ -25,7 +25,7 @@ def create_wafer_scale_engine(
     core_noc_bw: int,
     core_noc_vc: int,
     core_noc_buffer_size: int,
-    reticle_bw: int,
+    reticle_bw: float,  # ratio ... # 注意检查一下设计点，看看给的是相对带宽还是绝对带宽！
     core_array_h: int,
     core_array_w: int,
     wafer_mem_bw: int,
@@ -49,7 +49,7 @@ def create_wafer_scale_engine(
     wse_config = {
         'reticle_array_height': reticle_array_h,
         'reticle_array_width': reticle_array_w,
-        'inter_reticle_bandwidth': reticle_bw * WSE_FREQUENCY,
+        'inter_reticle_bandwidth': reticle_bw * core_noc_bw * WSE_FREQUENCY,  # 如果是相对带宽，要做一个转换！
         'dram_size': np.inf,  # ideally
         'dram_bandwidth': wafer_mem_bw * WSE_FREQUENCY,
         'dram_stacking_type': dram_stacking_type,
@@ -59,6 +59,7 @@ def create_wafer_scale_engine(
     return wafer_scale_engine
 
 def create_evaluator(
+    use_high_fidelity: bool,  # 选一下用哪个fidelity！
     wafer_scale_engine: WaferScaleEngine,
     attention_heads: int,
     hidden_size: int,
@@ -69,7 +70,8 @@ def create_evaluator(
     data_parallel_size: int = 1,
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
-    num_reticle_per_pipeline_stage: int = 1,
+    num_reticle_per_model_chunk: int = 1,  # 改名字了，记得查看一下！
+    weight_streaming: bool = True,  # 新加的接口！
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
 
@@ -80,7 +82,9 @@ def create_evaluator(
     default_training_config = TrainingConfig()
     default_inter_wafer_bandwidth = None
 
-    wse_transformer_runner = WseTransformerRunner(
+    transformer_runner = ReticleFidelityWseTransformerRunner if use_high_fidelity else WseTransformerRunner
+
+    wse_transformer_runner = transformer_runner(
         attention_heads=attention_heads,
         hidden_size=hidden_size,
         sequence_length=sequence_length,
@@ -93,7 +97,8 @@ def create_evaluator(
         wafer_scale_engine=wafer_scale_engine,
         training_config=default_training_config,
         inter_wafer_bandwidth=default_inter_wafer_bandwidth,
-        num_reticle_per_pipeline_stage=num_reticle_per_pipeline_stage,
+        num_reticle_per_model_chunk=num_reticle_per_model_chunk,
+        weight_streaming=weight_streaming,
     )
 
     return wse_transformer_runner
@@ -110,14 +115,14 @@ def nohup_decorator(func):
     return wrapper
 
 # @nohup_decorator
-def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization'):
+def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization', use_high_fidelity: bool=False):
     """ Evaluator API for DSE framework. 
     """
     logger.info(f"Design point: {design_point}")
     logger.info(f"Model parameters: {model_parameters}")
 
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
-    evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
+    evaluator = create_evaluator(use_high_fidelity, wafer_scale_engine, **model_parameters)
 
     result = None
     if metric == 'throughput':
@@ -150,7 +155,7 @@ def design_space_exploration():
             "micro_batch_size": 32,
             "tensor_parallel_size": 1,
             "model_parallel_size": 24,
-            "num_reticle_per_pipeline_stage": 1,
+            "num_reticle_per_model_chunk": 10,
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 
