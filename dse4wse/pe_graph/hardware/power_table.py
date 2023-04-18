@@ -6,6 +6,8 @@ from functools import reduce
 import operator
 import math
 
+from dse4wse.utils import logger
+
 MAC_DYNAMIC_ENERGY = (35.3 + 16.679) * (0.75 ** 2)      # pJ
 MAC_STATIC_POWER = (0.12 + 0.053) * 1e-3 * (0.75 ** 2)  # W
 
@@ -97,7 +99,7 @@ class WsePowerTable():
         """ Power consumption of DRAM access.
         We only consider dynamic access energy.
         """
-        total_power = DRAM_ACCESS_ENERGY * (data_amount * 8) / total_time * 1e12
+        total_power = DRAM_ACCESS_ENERGY * (data_amount * 8) / total_time / 1e12
         return total_power
 
     def _get_static_compute_power(self) -> float:
@@ -106,7 +108,7 @@ class WsePowerTable():
         return static_power
     
     def _get_dynamic_compute_power(self, data_amount: int, total_time: int) -> float:
-        dynamic_power = data_amount * MAC_DYNAMIC_ENERGY / total_time * 1e12
+        dynamic_power = data_amount * MAC_DYNAMIC_ENERGY / total_time / 1e12
         return dynamic_power
     
     def _get_static_router_power(self) -> float:
@@ -121,7 +123,7 @@ class WsePowerTable():
         reticle_h = (core_h + core_gap) * self.core_array_h
         reticle_w = (core_w + core_gap) * self.core_array_w
         expected_link_length = (reticle_h + reticle_w) / 2
-        intra_reticle_power = NOC_CHANNEL_FACTOR * expected_link_length * (data_amount * 8) / total_time * 1e12
+        intra_reticle_power = NOC_CHANNEL_FACTOR * expected_link_length * (data_amount * 8) / total_time / 1e12
 
         if self.package_type == 'cerebras':
             reticle_channel_energy = CEREBRAS_RETICLE_CHANNEL_ENERGY
@@ -129,7 +131,7 @@ class WsePowerTable():
             reticle_channel_energy = DOJO_RETICLE_CHANNEL_ENERGY
         else:
             raise NotImplementedError
-        inter_reticle_power = reticle_channel_energy * (data_amount * 8) / total_time * 1e12
+        inter_reticle_power = reticle_channel_energy * (data_amount * 8) / total_time / 1e12
 
         total_power = intra_reticle_power + inter_reticle_power
         return total_power
@@ -140,7 +142,7 @@ class WsePowerTable():
             self.core_array_w,
             self.reticle_array_h,
             self.reticle_array_w
-        ], initial=1)
+        ], 1)
 
     def _get_core_height_and_width(self) -> Tuple[int, int]:
         """ Copied from space_gen, verified with zjc.
@@ -172,6 +174,6 @@ class WsePowerTable():
     def _get_dynamic_sram_power(self, data_amount: int, total_time: int) -> float:
         sram_compiler_result = self.sram_table[str(self.core_buffer_size)][str(self.core_buffer_bw)]
         sram_access_energy = (sram_compiler_result['read_power'] + sram_compiler_result['write_power']) / 2
-        total_power = sram_access_energy * (data_amount * 8) / total_time * 1e12
+        total_power = sram_access_energy * (data_amount * 8) / total_time / 1e12
         return total_power
     

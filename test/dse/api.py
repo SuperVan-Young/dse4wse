@@ -118,7 +118,7 @@ def nohup_decorator(func):
     return wrapper
 
 # @nohup_decorator
-def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization', use_high_fidelity: bool=False):
+def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='power', use_high_fidelity: bool=True):
     """ Evaluator API for DSE framework. 
     """
     logger.info(f"Design point: {design_point}")
@@ -134,6 +134,8 @@ def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='tr
         result = evaluator.get_training_wse_utilization()  # with useful debugging info
     elif metric == 'latency':
         result = evaluator.get_inference_latency()
+    elif metric == 'power':
+        result = evaluator.get_training_peak_power()
     else:
         raise NotImplementedError
     logger.info(f"{metric}: {result}")
