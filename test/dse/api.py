@@ -39,6 +39,9 @@ def create_wafer_scale_engine(
     core_config = {
         'core_compute_power': core_mac_num * WSE_FREQUENCY,
         'core_sram_size': core_buffer_size * 1e3, # KB
+        'core_buffer_bandwidth': core_buffer_bw * WSE_FREQUENCY,
+        'core_noc_vc': core_noc_vc,
+        'core_noc_buffer_size': core_noc_buffer_size,
     }
     reticle_config = {
         'core_array_height': core_array_h,
@@ -115,7 +118,7 @@ def nohup_decorator(func):
     return wrapper
 
 # @nohup_decorator
-def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='training_utilization', use_high_fidelity: bool=False):
+def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='power', use_high_fidelity: bool=True):
     """ Evaluator API for DSE framework. 
     """
     logger.info(f"Design point: {design_point}")
@@ -131,6 +134,8 @@ def evaluate_design_point(design_point: Dict, model_parameters: Dict, metric='tr
         result = evaluator.get_training_wse_utilization()  # with useful debugging info
     elif metric == 'latency':
         result = evaluator.get_inference_latency()
+    elif metric == 'power':
+        result = evaluator.get_training_peak_power()
     else:
         raise NotImplementedError
     logger.info(f"{metric}: {result}")

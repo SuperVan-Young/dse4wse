@@ -500,8 +500,6 @@ class WseTransformerRunner():
         total_latency = total_fp_latency + cross_wafer_latency
         return total_latency
 
-    # TODO: power API
-
     def get_training_peak_power(self) -> float:
         """ Peak performance during 1 propagation.
         We can provide this API in high fidelity much more easily
@@ -757,6 +755,10 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             return total_latency
         
     def get_training_peak_power(self) -> float:
+        logger.info("Calculating training peak power of transformer layer")
+
+        self._find_best_intra_model_chunk_exec_params(inference=False)
+
         task_lists = self._get_task_lists(inference=False)
 
         # get total latency
@@ -766,6 +768,33 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
         total_latency = wse_evaluator.get_total_latency()  # in peak power, we ignore layer pipeline bubble
 
-        payload_per_module_type = wse_evaluator.get_module_payload()
+        # debug
+        # wse_evaluator.profile_utilization()
 
-        # FIXME: finish this part later
+        # get total payload
+        payload_per_module_type = wse_evaluator.get_module_payload()
+        compute_payload = payload_per_module_type['compute']
+        interconnect_payload = payload_per_module_type['inter_reticle']
+        dram_payload = payload_per_module_type['dram']
+
+        core_num_mac = self.wafer_scale_engine.reticle_config['core_config']['core_compute_power'] / 1e9
+        arithmetic_intensity = (core_num_mac / 3) ** 0.5
+        sram_payload = compute_payload / arithmetic_intensity
+
+        # get power table
+        power_table = self.wafer_scale_engine.buiid_power_table()
+
+        compute_power = power_table.get_compute_power(compute_payload, total_latency)
+        interconnect_power = power_table.get_interconnect_power(interconnect_payload, total_latency)
+        dram_power = power_table.get_dram_access_power(dram_payload, total_latency)
+        sram_power = power_table.get_sram_access_power(sram_payload, total_latency)
+
+        total_power = compute_power + interconnect_power + sram_power + dram_power
+
+        logger.debug(f"compute_power: {compute_power} W ({compute_power / total_power:.2%})")
+        logger.debug(f"interconnect_power: {interconnect_power} W ({interconnect_power / total_power:.2%})")
+        logger.debug(f"dram_power: {dram_power} W ({dram_power / total_power:.2%})")
+        logger.debug(f"sram_power: {sram_power} W ({sram_power / total_power:.2%})")
+        logger.debug(f"total power: {total_power} W")
+
+        return total_power
