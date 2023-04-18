@@ -42,7 +42,7 @@
     },
     "Reticle": {
         "inter-reticle bandwidth": {
-            "initial value": 1.0,
+            "initial value": 0.25,
             "end value": 1.0,
             "style": "linear",
             "scale": 0.25,
