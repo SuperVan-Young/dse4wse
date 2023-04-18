@@ -3,6 +3,7 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from typing import Dict
 from copy import deepcopy
 import networkx as nx
 from networkx import DiGraph
@@ -247,6 +248,30 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             'dram': np.max(group_dram_bandwidth_utils).item(),
         }
         return final_report
+    
+    def get_module_payload(self) -> Dict[str, int]:
+        """ get total payload of each module type.
+        This method is useful in calculating power
+        """
+        G = self.__build_annotated_graph()
+
+        total_payload = {
+            'compute': 0,
+            'inter_reticle': 0,
+            'dram': 0,
+        }
+        for node, ndata in G.nodes(data=True):
+            if ndata['compute_mark']:
+                payload = sum(ndata['compute_mark'].values())
+                total_payload['compute'] += payload
+            if ndata['dram_access_mark']:
+                payload = sum(ndata['dram_access_mark'].values())
+                total_payload['dram'] += payload
+        for u, v, edata in G.edges(data=True):
+            if edata['transmission_mark']:
+                payload = sum(edata['transmission_mark'].values())
+                total_payload['inter_reticle'] += payload
+        return total_payload
 
     def dump_graph(self):
         """ Dump graph and feature tensors for training GNN

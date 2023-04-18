@@ -39,6 +39,9 @@ def create_wafer_scale_engine(
     core_config = {
         'core_compute_power': core_mac_num * WSE_FREQUENCY,
         'core_sram_size': core_buffer_size * 1e3, # KB
+        'core_buffer_bandwidth': core_buffer_bw * WSE_FREQUENCY,
+        'core_noc_vc': core_noc_vc,
+        'core_noc_buffer_size': core_noc_buffer_size,
     }
     reticle_config = {
         'core_array_height': core_array_h,

@@ -9,6 +9,7 @@ import networkx as nx
 
 from .reticle import Reticle
 from .dram_port import DramPort
+from .power_table import WsePowerTable
 
 class WaferScaleEngine():
 
@@ -111,3 +112,28 @@ class WaferScaleEngine():
             raise RuntimeError
         assert ret
         return ret
+
+    def buiid_power_table(self) -> WsePowerTable:
+        """Translate parameters into raw design parameters, and build a power table
+        """
+        reticle_config = self.reticle_config
+        core_config = reticle_config['core_config']
+        WSE_FREQUENCY = 1e9
+
+        wse_power_table = WsePowerTable(
+            core_buffer_size=int(core_config['core_buffer_size'] / 1e3),
+            core_buffer_bw=int(core_config['core_buffer_bandwidth'] / WSE_FREQUENCY),
+            core_mac_num=int(core_config['core_mac_num'] / WSE_FREQUENCY),
+            core_noc_bw=int(reticle_config['inter_core_bandwidth'] / WSE_FREQUENCY),
+            core_noc_vc=core_config['core_noc_vc'],
+            core_noc_buffer_size=core_config['core_noc_buffer_size'],
+            reticle_bw=1,  # doesn't matter ...
+            core_array_h=reticle_config['core_array_height'],
+            core_array_w=reticle_config['core_array_width'],
+            wafer_mem_bw=int(self.dram_bandwidth / WSE_FREQUENCY),
+            reticle_array_h=self.reticle_array_height,
+            reticle_array_w=self.reticle_array_width,
+            package_type='cerebras',  # default to be cerebras, for now
+        )
+
+        return wse_power_table
