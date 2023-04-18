@@ -5,6 +5,8 @@ from itertools import product
 from typing import List
 # import pandas as pd
 from tqdm import tqdm
+import numpy as np
+import pickle
 
 DSE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,7 +49,7 @@ class design_space_construction():
 
     def gen_design_points(self):
         total_design_points = 0
-        f = open("design_points.list", "w")
+        # f = open("design_points.list", "w")
         # df = pd.DataFrame(columns=[
         #     "core_buffer_size", 
         #     "core_buffer_bw", 
@@ -62,8 +64,10 @@ class design_space_construction():
         #     "reticle_array_w",
         #     "wafer_mem_bw",
         # ])
+        ret = []
+        s = [set() for i in range(12)]
 
-        for core_buffer_size, core_mac_num in product(self.parameter_list['Core']['buffer size'] + [48], self.parameter_list['Core']['MAC number']):
+        for core_buffer_size, core_mac_num in tqdm(product(self.parameter_list['Core']['buffer size'] + [48], self.parameter_list['Core']['MAC number'])):
             core_buffer_size = int(core_buffer_size)
             if str(core_buffer_size) in self.sram_table:
                 core_buffer_bw_list = [int(core_buffer_bw) for core_buffer_bw in self.sram_table[str(core_buffer_size)] \
@@ -118,9 +122,12 @@ class design_space_construction():
                                     reticle_array_h, 
                                     reticle_array_w
                                 ]
-                                print(design_point, file=f)
+                                ret.append(design_point)
+                                for i in range(len(design_point)):
+                                    s[i].add(design_point[i])
+                                # print(design_point, file=f)
                                 total_design_points += 1
-                                print(total_design_points)
+                                # print(total_design_points)
 
         #                     design_point = {
         #                         "core_buffer_size": core_buffer_size, 
@@ -145,6 +152,11 @@ class design_space_construction():
 
         # print(f"#Design_Points = {len(df.index)}")
         print("Total design point number: ", total_design_points)
+        ret = np.array(ret)
+        print('convert to npy files, saving files')
+        np.save('design_points.npy', ret, allow_pickle=True)
+        with open('design_space.pickle', 'wb') as f:
+            pickle.dump(s, f)
 
         # df.to_excel("design_points.xlsx", index=False)
 
