@@ -539,7 +539,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         self.num_pipeline_stage_per_wafer = 1   # stay compatible with old codes
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
-        self.is_overlap = False  # if ture, we overlap compute with inter reticle communication
+        self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
     
     def __alloc_new_dram_port(self):
