@@ -135,14 +135,14 @@ class WseTransformerRunner():
 
     # helper functions for API
 
-    def _get_flops_per_seq_per_layer(self, inference=False):
+    def _get_flops_per_model_chunk_per_seq_per_layer(self, inference=False):
         """ Calculate FLOPS, copied from Cerebras-GPT appendix.
         Embedding and final logits are ignored for simplicity.
         """
         d_model = self.hidden_size
         seq_len = self.sequence_length
-        num_heads = self.attention_heads
-        key_size = d_model // num_heads
+        num_heads = self.attention_heads // self.tensor_parallel_size
+        key_size = d_model // self.attention_heads
 
         kqv_proj = 2 * 3 * seq_len * d_model * (key_size * num_heads)  # 2 for mul+add
         kq_logits = 2 * (seq_len ** 2) * (key_size * num_heads)
@@ -173,7 +173,7 @@ class WseTransformerRunner():
         assert self.zero_dp_p is False
 
         compute_power = self.wafer_scale_engine.reticle_compute_power * self.num_reticle_per_model_chunk
-        total_flops = self._get_flops_per_seq_per_layer(inference) * self.micro_batch_size * self.num_layer_per_model_chunk
+        total_flops = self._get_flops_per_model_chunk_per_seq_per_layer(inference) * self.micro_batch_size * self.num_layer_per_model_chunk
         total_latency = total_flops / compute_power
 
         return total_latency 
@@ -372,7 +372,7 @@ class WseTransformerRunner():
                 return checkpoint_size + weight_size + act_size <= sram_size
     
     def get_propagation_latency(self, inference: bool, detailed_report=False):
-        """ Only consider events WITHIN a reticle.
+        """ Propagation latency of a micro batch, 1F for inference, 1F1B for training.
         Naive version doesn't consider overlapping, but lp_solver version does
         """
         input_latency = self._get_input_latency(inference=inference)
@@ -501,6 +501,12 @@ class WseTransformerRunner():
         return total_latency
 
     # TODO: power API
+
+    def get_training_peak_power(self) -> float:
+        """ Peak performance during 1 propagation.
+        We can provide this API in high fidelity much more easily
+        """
+        raise NotImplementedError
     
 class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     """ Estimate WSE performance with higher fidelity
@@ -652,7 +658,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
 
     def __assign_compute_reticle_task(self, inference: bool) -> List[BaseReticleTask]:
         # compute size for one reticle (consider rematerialization seperately)
-        compute_amount_per_model_chunk = self._get_flops_per_seq_per_layer(inference=inference)
+        compute_amount_per_model_chunk = self._get_flops_per_model_chunk_per_seq_per_layer(inference=inference)
         compute_amount_per_model_chunk *= self.nano_batch_size * self.num_layer_per_model_chunk
         # split compute evenly (this may not lead to a valid allocation)
         compute_amount_per_reticle = compute_amount_per_model_chunk / self.num_reticle_per_model_chunk
@@ -696,8 +702,8 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
         wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
         return wse_evaluator.get_total_latency()
-    
-    def get_propagation_latency(self, inference: bool, detailed_report=False):
+
+    def _get_task_lists(self, inference: bool) -> Dict[str, List]:
         input_task_list = self._assign_input_reticle_task(inference=inference)
         output_task_list = self._assign_output_reticle_task(inference=inference)
         swap_weight_task_list = self.__assign_swap_weight_reticle_task(inference=inference)
@@ -711,7 +717,13 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             'compute': compute_task_list,
             'allreduce': allreduce_task_list,
         }
+        return task_lists
 
+    # API for evaluation
+
+    def get_propagation_latency(self, inference: bool, detailed_report=False):
+        task_lists = self._get_task_lists(inference)
+        
         if self.is_overlap:
             task_list = sum(task_lists.values(), [])
             wse_task = ListWaferTask(task_list)
@@ -743,3 +755,17 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             return final_report
         else:
             return total_latency
+        
+    def get_training_peak_power(self) -> float:
+        task_lists = self._get_task_lists(inference=False)
+
+        # get total latency
+        task_list = sum(task_lists.values(), [])
+        wse_task = ListWaferTask(task_list)
+        mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
+        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+        total_latency = wse_evaluator.get_total_latency()  # in peak power, we ignore layer pipeline bubble
+
+        payload_per_module_type = wse_evaluator.get_module_payload()
+
+        # FIXME: finish this part later
