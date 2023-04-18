@@ -3,7 +3,7 @@ import math
 import os
 from itertools import product
 from typing import List
-import pandas as pd
+# import pandas as pd
 from tqdm import tqdm
 
 DSE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,21 +47,21 @@ class design_space_construction():
 
     def gen_design_points(self):
         total_design_points = 0
-
-        df = pd.DataFrame(columns=[
-            "core_buffer_size", 
-            "core_buffer_bw", 
-            "core_mac_num", 
-            "core_noc_bw", 
-            "core_noc_vc", 
-            "core_noc_buffer_size", 
-            "reticle_bw", 
-            "core_array_h", 
-            "core_array_w", 
-            "reticle_array_h", 
-            "reticle_array_w",
-            "wafer_mem_bw",
-        ])
+        f = open("design_points.list", "w")
+        # df = pd.DataFrame(columns=[
+        #     "core_buffer_size", 
+        #     "core_buffer_bw", 
+        #     "core_mac_num", 
+        #     "core_noc_bw", 
+        #     "core_noc_vc", 
+        #     "core_noc_buffer_size", 
+        #     "reticle_bw", 
+        #     "core_array_h", 
+        #     "core_array_w", 
+        #     "reticle_array_h", 
+        #     "reticle_array_w",
+        #     "wafer_mem_bw",
+        # ])
 
         for core_buffer_size, core_mac_num in product(self.parameter_list['Core']['buffer size'] + [48], self.parameter_list['Core']['MAC number']):
             core_buffer_size = int(core_buffer_size)
@@ -96,37 +96,57 @@ class design_space_construction():
                     core_w += noc_w 
 
                     # debug, really big step
-                    for core_array_h, core_array_w in product(range(8, 129, 8), range(8, 129, 8)):
+                    for core_array_h, core_array_w in product(range(8, 129, 4), range(8, 129, 4)):
                         reticle_h = core_array_h * (core_h + self.core_gap)
                         reticle_w = core_array_w * (core_w + self.core_gap)
                         if reticle_h < (self.reticle_limit_height - self.dojo_overhead) and reticle_w < (self.reticle_limit_width - self.dojo_overhead):
-                            reticle_array_h = int(self.wafer_limit / (reticle_h + self.reticle_gap))
-                            reticle_array_w = int(self.wafer_limit / (reticle_w + self.reticle_gap))
+                            max_reticle_array_h = int(self.wafer_limit / (reticle_h + self.reticle_gap))
+                            max_reticle_array_w = int(self.wafer_limit / (reticle_w + self.reticle_gap))
 
-                            design_point = {
-                                "core_buffer_size": core_buffer_size, 
-                                "core_buffer_bw": core_buffer_bw, 
-                                "core_mac_num": core_mac_num, 
-                                "core_noc_bw": core_noc_bw, 
-                                "core_noc_vc": core_noc_vc, 
-                                "core_noc_buffer_size": core_noc_buffer_size, 
-                                "reticle_bw": reticle_bw, 
-                                "core_array_h": core_array_h, 
-                                "core_array_w": core_array_w, 
-                                "reticle_array_h": reticle_array_h, 
-                                "reticle_array_w": reticle_array_w,
-                                "wafer_mem_bw": wafer_mem_bw,
-                            }
-                            df.loc[len(df.index)] = design_point
-                            total_design_points += 1
-                            if total_design_points % 1000 == 0:
-                                print(design_point)
-                                print(f"Total design point reaches {total_design_points}")
-                                df.to_excel("design_points.xlsx", index=False)
+                            for reticle_array_h, reticle_array_w in product(range(1, max_reticle_array_h + 1, 1), range(1, max_reticle_array_w + 1, 1)):
+                                design_point = [
+                                    core_buffer_size, 
+                                    core_buffer_bw, 
+                                    core_mac_num, 
+                                    core_noc_bw, 
+                                    core_noc_vc, 
+                                    core_noc_buffer_size, 
+                                    reticle_bw, 
+                                    core_array_h, 
+                                    core_array_w,
+                                    wafer_mem_bw, 
+                                    reticle_array_h, 
+                                    reticle_array_w
+                                ]
+                                print(design_point, file=f)
+                                total_design_points += 1
+                                print(total_design_points)
 
-        print(f"#Design_Points = {len(df.index)}")
+        #                     design_point = {
+        #                         "core_buffer_size": core_buffer_size, 
+        #                         "core_buffer_bw": core_buffer_bw, 
+        #                         "core_mac_num": core_mac_num, 
+        #                         "core_noc_bw": core_noc_bw, 
+        #                         "core_noc_vc": core_noc_vc, 
+        #                         "core_noc_buffer_size": core_noc_buffer_size, 
+        #                         "reticle_bw": reticle_bw, 
+        #                         "core_array_h": core_array_h, 
+        #                         "core_array_w": core_array_w, 
+        #                         "reticle_array_h": reticle_array_h, 
+        #                         "reticle_array_w": reticle_array_w,
+        #                         "wafer_mem_bw": wafer_mem_bw,
+        #                     }
+        #                     df.loc[len(df.index)] = design_point
+        #                     total_design_points += 1
+        #                     if total_design_points % 1000 == 0:
+        #                         print(design_point)
+        #                         print(f"Total design point reaches {total_design_points}")
+        #                         df.to_excel("design_points.xlsx", index=False)
 
-        df.to_excel("design_points.xlsx", index=False)
+        # print(f"#Design_Points = {len(df.index)}")
+        print("Total design point number: ", total_design_points)
+
+        # df.to_excel("design_points.xlsx", index=False)
 
     def get_sram_area(self, core_buffer_size, core_buffer_bw):
         sram_compiler_result = self.sram_table[str(core_buffer_size)][str(core_buffer_bw)]
