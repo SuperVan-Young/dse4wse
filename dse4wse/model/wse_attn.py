@@ -296,6 +296,7 @@ class WseTransformerRunner():
         weight_numel_per_wafer = weight_numel_per_model_chunk * self.tensor_parallel_size
         swapped_weight_numel = ceil(self.micro_batch_size / self.nano_batch_size) * weight_numel_per_wafer
         if not inference: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        swapped_weight_numel *= self.weight_swapping_factor
         swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
 
         bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
@@ -659,6 +660,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         weight_numel_per_model_chunk = self._get_weight_numel_per_model_chunk()
         swapped_weight_numel = weight_numel_per_model_chunk / self.num_reticle_per_model_chunk
         if not inference: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        swapped_weight_numel *= self.weight_swapping_factor
         swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
 
         repeated_times = ceil(self.micro_batch_size / self.nano_batch_size)
