@@ -573,7 +573,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             if need_to_access_dram(worker_reticle_index=worker_reticle_index):  # need to fetch input from DRAM
                 if tensor_parallel_index == 0:  # only the first worker access DRAM
                     virtual_dram_port = self.__alloc_new_dram_port()
-                    reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', input_tensor_size, repeated_times=self.micro_batch_size)
+                    reticle_task = DramAccessReticleTask(virtual_reticle_id, virtual_dram_port, 'read', input_tensor_size, repeated_times=repeated_times)
                     task_list.append(reticle_task)
                 else:  # other workers fetch from their peers, forming a binary tree
                     pred_tensor_parallel_index = tensor_parallel_index - 1  # but that would make transmission overlap, and we simply assumes 100% bandwidth utilization
