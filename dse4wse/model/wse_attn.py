@@ -729,7 +729,6 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
             total_latency = wse_evaluator.get_total_latency()
             idle_latency = (self.layer_pipeline_size - 1) / (self.micro_batch_size // self.nano_batch_size) * total_latency
-            total_latency += idle_latency
             if detailed_report:
                 util_report = wse_evaluator.profile_utilization()
                 final_report = {
@@ -737,6 +736,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                     'inter_reticle': util_report['inter_reticle'] * total_latency,
                     'idle': idle_latency,
                 }
+            total_latency += idle_latency
         else:
             raw_report = {}
             for task_type, task_list in task_lists.items():
