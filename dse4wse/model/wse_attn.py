@@ -74,10 +74,10 @@ class WseTransformerRunner():
         # intra-model-chunk params, transparent to users
         # Best exec params differ from training to inference, so we find optimal setting
         # everytime we call on perf API.
+        self.weight_streaming = None
         self.nano_batch_size = None
         self.layer_pipeline_size = None
-
-        self.weight_streaming = weight_streaming
+        self.weight_swapping_factor = None
 
         # ZeRO settings, this setting is now fixed for simplicity
         self.zero_dp_os = zero_dp_os
@@ -103,35 +103,52 @@ class WseTransformerRunner():
         self.training_config = training_config
     
     def _find_best_intra_model_chunk_exec_params(self, inference: bool) -> None:
-        if self.weight_streaming:
-            self.nano_batch_size = None
-            self.layer_pipeline_size = 1
+        """ Compiler find the best parameters to execute one model chunk
+
+        First, it tries layer pipelining mode. 
+        We intend to use layer pipelining for better resource utilization,
+        however, in current setup, layer pipelining only degradate perf due to pipeline bubbles.
+        Then, when weight cannot be held on SRAM, it uses weight streaming mode.
+        We try to keep as much activation on chip as possible, however, when the activation
+        of single sequence cannot be withheld, we swap weight more often.
+        """
+
+        # reset exec params
+        self.weight_streaming = None
+        self.nano_batch_size = None
+        self.layer_pipeline_size = None
+        self.weight_swapping_factor = None
+
+        # try layer pipelining, we try to minimize bubble, so layer pipeline stage stays at 1
+        self.layer_pipeline_size = 1
+        self.weight_swapping_factor = 1
+
+        # try layer pipeline, then weight streaming
+        for weight_streaming in [False, True]:
+            self.weight_streaming = weight_streaming
             for nano_batch_size in sorted(factoring(self.micro_batch_size), reverse=True):
-                try:
-                    assert self.get_sram_utilization(inference, nano_batch_size, 1)
-                except AssertionError:
-                    continue
-                self.nano_batch_size = nano_batch_size  # maximum nano batch size you can find
+                try: assert self.get_sram_utilization(inference, nano_batch_size, self.layer_pipeline_size, self.weight_streaming)
+                except AssertionError: continue
+                self.nano_batch_size = nano_batch_size
                 break
-            assert self.nano_batch_size, "Minimum nano batch size cannot be held on the wafer!"
-        else:  # layer pipelining
-            self.nano_batch_size = None
-            self.layer_pipeline_size = None
-            min_bubble_rate = np.inf
-            for nano_batch_size, layer_pipeline_size in product(factoring(self.micro_batch_size), factoring(self.num_layer_per_model_chunk)):
-                try:
-                    assert self.get_sram_utilization(inference, nano_batch_size, layer_pipeline_size)
-                except AssertionError:
-                    continue
-                # GPipe's pipeline bubble
-                m = self.micro_batch_size // nano_batch_size
-                p = layer_pipeline_size
-                bubble_rate = (p - 1) / m
-                if bubble_rate < min_bubble_rate:
-                    self.nano_batch_size = nano_batch_size
-                    self.layer_pipeline_size = layer_pipeline_size
-            assert self.nano_batch_size, "Minimum nano batch size cannot be held on the wafer!"
-            assert self.layer_pipeline_size
+            if self.nano_batch_size:
+                assert self.weight_streaming
+                assert self.nano_batch_size
+                assert self.layer_pipeline_size
+                assert self.weight_swapping_factor
+                return
+
+        # swap more weight when 1 seq cannot be withheld
+        self.nano_batch_size = 1
+        act_size = self._get_sram_usage(inference, nano_batch_size=1, layer_pipeline_size=1, weight_streaming=True)
+        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk
+        assert act_size > sram_size
+        self.weight_swapping_factor = ceil(act_size / sram_size)
+
+        assert self.weight_streaming
+        assert self.nano_batch_size
+        assert self.layer_pipeline_size
+        assert self.weight_swapping_factor
 
     # helper functions for API
 
@@ -279,6 +296,7 @@ class WseTransformerRunner():
         weight_numel_per_wafer = weight_numel_per_model_chunk * self.tensor_parallel_size
         swapped_weight_numel = ceil(self.micro_batch_size / self.nano_batch_size) * weight_numel_per_wafer
         if not inference: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        swapped_weight_numel *= self.weight_swapping_factor
         swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
 
         bisection_bandwidth = self.wafer_scale_engine.get_bisection_bandwidth()
@@ -335,20 +353,18 @@ class WseTransformerRunner():
         comm_latency = comm_size / bandwidth
         return comm_latency
     
-    def get_sram_utilization(self, inference: bool, nano_batch_size: int = None, layer_pipeline_size: int = None) -> bool:
-        """ Check if SRAM could hold a model chunk
-        """
-        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk
+    def _get_sram_usage(self, inference: bool, nano_batch_size: int = None, layer_pipeline_size: int = None, weight_streaming: bool = None) -> int:
         precision = self.training_config.get_precision_size()
-
         if nano_batch_size is None: nano_batch_size = self.nano_batch_size
         if layer_pipeline_size is None: layer_pipeline_size = self.layer_pipeline_size
+        if weight_streaming is None: weight_streaming = self.weight_streaming
         assert nano_batch_size
         assert layer_pipeline_size
+        assert weight_streaming
 
         attn_act_size = self._get_attn_activation_numel_per_model_chunk_per_seq_per_layer() * precision
         ffn_act_size = self._get_ffn_activation_numel_per_model_chunk_per_seq_per_layer() * precision
-        if self.weight_streaming:
+        if weight_streaming:
             assert layer_pipeline_size == 1, "You shouldn't set layer pipelining on weight streaming mode!"
             if inference:
                 # only store 1 layer's activation
@@ -359,17 +375,25 @@ class WseTransformerRunner():
                 # in this way, we maximize reuse of weight
                 act_size = (attn_act_size + ffn_act_size) * nano_batch_size
             # logger.debug(f"nano batch size: {nano_batch_size}, weight streaming act size: {act_size / 1e9} GB, sram size: {sram_size / 1e9} GB")
-            return act_size < sram_size  # save some space for weight
+            return act_size  # save some space for weight
         else:  # layer pipelining
             weight_size = self._get_weight_numel_per_model_chunk()
             # each pipeline stage hold one complete share of activation
-            act_size = layer_pipeline_size * nano_batch_size * (attn_act_size + layer_pipeline_size)
+            act_size = layer_pipeline_size * nano_batch_size * (attn_act_size + ffn_act_size)
             if inference:
-                return weight_size + act_size <= sram_size
+                return weight_size + act_size
             else:
                 # each layer pipeline stage need to buffer the same number of nano batch as the depth of pipeline
-                checkpoint_size = layer_pipeline_size * (layer_pipeline_size * nano_batch_size ) * self.sequence_length * self.hidden_size
-                return checkpoint_size + weight_size + act_size <= sram_size
+                checkpoint_size = layer_pipeline_size * (layer_pipeline_size * nano_batch_size) * self.sequence_length * self.hidden_size
+                return checkpoint_size + weight_size + act_size
+
+    
+    def get_sram_utilization(self, inference: bool, nano_batch_size: int = None, layer_pipeline_size: int = None, weight_streaming: bool = None) -> bool:
+        """ Check if SRAM could hold a model chunk
+        """
+        sram_size = Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk
+        sram_usage = self._get_sram_usage(inference, nano_batch_size, layer_pipeline_size, weight_streaming)
+        return sram_usage < sram_size
     
     def get_propagation_latency(self, inference: bool, detailed_report=False):
         """ Propagation latency of a micro batch, 1F for inference, 1F1B for training.
@@ -532,10 +556,9 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                  zero_dp_p: bool = False, 
                  zero_r_pa: bool = True, 
                  num_reticle_per_model_chunk: int = 1,
-                 weight_streaming: bool = True,
                  **kwargs,
                  ) -> None:
-        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_model_chunk, weight_streaming, **kwargs)
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_model_chunk, **kwargs)
         self.num_pipeline_stage_per_wafer = 1   # stay compatible with old codes
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
@@ -637,6 +660,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         weight_numel_per_model_chunk = self._get_weight_numel_per_model_chunk()
         swapped_weight_numel = weight_numel_per_model_chunk / self.num_reticle_per_model_chunk
         if not inference: swapped_weight_numel *= 3  # fp-read + rebuild + bp-read + bp write grad, we fuse rebuild and bp-read for simplicity
+        swapped_weight_numel *= self.weight_swapping_factor
         swapped_weight_size = swapped_weight_numel * self.training_config.get_precision_size()
 
         repeated_times = ceil(self.micro_batch_size / self.nano_batch_size)
