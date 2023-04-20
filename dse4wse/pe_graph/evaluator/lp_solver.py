@@ -423,7 +423,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         Graph-level regression target:
             - calculated total latency.
         """
-        assert virtual_reticle_id < len(self.task)
+        assert virtual_reticle_id < len(self.vrid_2_var)
 
         G = self.__build_annotated_graph()
         min_freq = self.__lp_solver(G)
@@ -479,8 +479,8 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             num_flit_per_service = sum(num_relative_flit.values()) * bw_util + (1 - bw_util)
             # this represents how many flit this link has to send to actually send a flit of this vrid
 
-            latency_of_this_link = num_flit_per_service * flit_of_current_task / 1e9
-            end2end_latency = max(end2end_latency, latency_of_this_link)
+            latency_of_this_link = num_flit_per_service * flit_of_current_task
+            end2end_latency = max(end2end_latency, latency_of_this_link)  # in terms of flit, so you need to restore it to sec
             # so we don't consider latency due to every hop
         
         return edge_srcs, edge_dsts, node_feats, edge_feats, end2end_latency

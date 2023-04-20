@@ -30,3 +30,8 @@ class LinkUtilDataset(DGLDataset):
     def __len__(self):
         num_files = len(self.data_names)
         return num_files
+    
+class NoCeptionDataset(DGLDataset):
+    def __init__(self, url=None, raw_dir=None, save_dir=None, hash_key=..., force_reload=False, verbose=False, transform=None):
+        name = 'NoCeption Dataset'
+        super().__init__(name, url, raw_dir, save_dir, hash_key, force_reload, verbose, transform)

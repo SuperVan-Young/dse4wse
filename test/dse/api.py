@@ -32,6 +32,7 @@ def create_wafer_scale_engine(
     reticle_array_h: int,
     reticle_array_w: int,
     dram_stacking_type: str = '2d',
+    **kwargs,
 ) -> WaferScaleEngine:
     """ Variable naming follows previous conventions
     """
@@ -73,8 +74,7 @@ def create_evaluator(
     data_parallel_size: int = 1,
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
-    num_reticle_per_model_chunk: int = 1,  # 改名字了，记得查看一下！
-    weight_streaming: bool = True,  # 新加的接口！
+    **kwargs,
 ):
     """ kwargs with initial values can be cherry-picked for specific workloads.
 
@@ -100,8 +100,6 @@ def create_evaluator(
         wafer_scale_engine=wafer_scale_engine,
         training_config=default_training_config,
         inter_wafer_bandwidth=default_inter_wafer_bandwidth,
-        num_reticle_per_model_chunk=num_reticle_per_model_chunk,
-        weight_streaming=weight_streaming,
     )
 
     return wse_transformer_runner
