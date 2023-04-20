@@ -11,6 +11,8 @@ from scipy.optimize import linprog
 import numpy as np
 import torch as th
 from itertools import chain, product
+from functools import reduce
+import math
 
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import BaseReticleTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
@@ -408,3 +410,77 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         assert hlid_label, "We don't support no-link cases"
 
         return data_dict, feat_dict, label_dict
+    
+    def dump_graph_v2(self, virtual_reticle_id: int):
+        """ dump reticle graph of a task.
+
+        Edges: passing edges and links connecting 1-hop neighbors
+        Node features: vector of length 2
+            - Does this core have computation task? (one-hot)
+        Edge features: vector of length 2
+            - total transmission amount: in terms of flit
+            - total number of flow
+        Graph-level regression target:
+            - calculated total latency.
+        """
+        assert virtual_reticle_id < len(self.task)
+
+        G = self.__build_annotated_graph()
+        min_freq = self.__lp_solver(G)
+
+        # find all relevant nodes and build a subgraph
+        target_nodes = {u for u, v, edata in G.edges(data=True) if virtual_reticle_id in edata['transmission_mark']}
+        target_neighbors = reduce(lambda x, y: x | y, [set(G.neighbors(u)) for u in target_nodes], {})
+        target_nodes = target_nodes | target_neighbors
+        g = G.subgraph(target_nodes)
+        g: nx.DiGraph
+        node_2_alias = {u: i for i, u in enumerate(g.nodes())}
+
+        # build edges
+        edge_srcs = [node_2_alias[u] for u, v in g.edges()]
+        edge_dsts = [node_2_alias[v] for u, v in g.edges()]
+
+        # build node feats
+        node_feats = []
+        for n, ndata in g.nodes(data=True):
+            onehot = [1, 0] if virtual_reticle_id in ndata['compute_mark'] else [0, 1]
+            feat = np.array(onehot)
+            node_feats.append(feat)
+        node_feats = np.stack(node_feats, axis=0, dtype='float')
+
+        
+        def get_num_flit(data_amount):
+            WSE_FREQUENCY = 1e9
+            flit_size = self.hardware.inter_reticle_bandwidth / WSE_FREQUENCY  # byte
+            num_flit = math.ceil(data_amount / flit_size) + 1
+            return num_flit
+
+        # build edge feats
+        edge_feats = []
+        for u, v, edata in g.edges(data=True):
+            num_flit = sum([get_num_flit(d) for d in edata['transmission_mark'].values()])
+            num_flow = len(edata['transmission_mark'])
+            feat = np.array([num_flit, num_flow])
+            edge_feats.append(feat)
+        edge_feats = np.stack(edge_feats, axis=0, dtype='float')
+
+        # build graph level regression target
+        inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
+        end2end_latency = 0
+
+        for u, v, edata in g.edges(data=True):
+            if not virtual_reticle_id in edata['transmission_mark']:
+                continue
+            vrid_2_num_flit = {vrid: get_num_flit(d) for vrid, d in edata['transmission_mark'].items()}
+            flit_of_current_task = vrid_2_num_flit[virtual_reticle_id]
+            vrid_2_num_relative_flit = {vrid: f / flit_of_current_task for vrid, f in vrid_2_num_flit.items()}
+
+            bw_util = sum([d for d in edata['transmission_mark'].values()]) * min_freq / inter_reticle_bandwidth
+            num_flit_per_service = sum(num_relative_flit.values()) * bw_util + (1 - bw_util)
+            # this represents how many flit this link has to send to actually send a flit of this vrid
+
+            latency_of_this_link = num_flit_per_service * flit_of_current_task / 1e9
+            end2end_latency = max(end2end_latency, latency_of_this_link)
+            # so we don't consider latency due to every hop
+        
+        return edge_srcs, edge_dsts, node_feats, edge_feats, end2end_latency
