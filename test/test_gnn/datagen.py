@@ -9,6 +9,7 @@ import pickle as pkl
 import numpy as np
 import random
 import torch
+import multiprocessing
 
 from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner
 from dse4wse.utils import TrainingConfig, logger
@@ -21,8 +22,8 @@ from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator
 from dse4wse.gnn.dataloader import NoCeptionDataset
 
 class GnnDataGenTransformerRunner(ReticleFidelityWseTransformerRunner):
-    def __init__(self, attention_heads: int, hidden_size: int, sequence_length: int, number_of_layers: int, micro_batch_size: int, mini_batch_size: int, data_parallel_size: int, model_parallel_size: int, tensor_parallel_size: int, wafer_scale_engine: WaferScaleEngine, training_config: TrainingConfig, inter_wafer_bandwidth: Union[int, None] = None, zero_dp_os: bool = True, zero_dp_g: bool = True, zero_dp_p: bool = False, zero_r_pa: bool = True, num_reticle_per_pipeline_stage: int = 1, **kwargs) -> None:
-        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage, **kwargs)
+    def __init__(self, attention_heads: int, hidden_size: int, sequence_length: int, number_of_layers: int, micro_batch_size: int, mini_batch_size: int, data_parallel_size: int, model_parallel_size: int, tensor_parallel_size: int, wafer_scale_engine: WaferScaleEngine, training_config: TrainingConfig, inter_wafer_bandwidth: Union[int, None] = None, zero_dp_os: bool = True, zero_dp_g: bool = True, zero_dp_p: bool = False, zero_r_pa: bool = True, **kwargs) -> None:
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, **kwargs)
 
     def get_gnn_training_data(self, inference: bool=False, num_data: int=1) -> List:
         """ Modified from get_propagation_latency
@@ -124,19 +125,32 @@ def create_evaluator(
 
     return wse_transformer_runner
 
-def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict) -> List:
-    logger.info(f"Design point: {design_point}")
-    logger.info(f"Model parameters: {model_parameters}")
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+
+def generate_single_gnn_training_data(idx: int, design_point: Dict, model_parameters: Dict) -> List:
+    logger.info(f"Design point idx {idx}")
+    # logger.info(f"Design point: {design_point}")
+    # logger.info(f"Model parameters: {model_parameters}")
 
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
     evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
-    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=10)
+    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=1)
+    training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=1)
 
-    return training_data_list
+    for j, training_data in enumerate(training_data_list):
+        with open(os.path.join(DATA_DIR, f"{idx}_{j}.pickle"), 'wb') as f:
+            pkl.dump(training_data, f)
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+def wrapper_generate_single_gnn_training_data(x):
+    idx, (design_point, model_parameters) = x
+    try:
+        generate_single_gnn_training_data(idx, design_point, model_parameters)
+    except KeyboardInterrupt:
+        exit(1)
+    except:
+        logger.debug("Error in generating data")
 
-def generate_batch_gnn_training_data(idx_range=None):
+def generate_batch_gnn_training_data(idx_range=None, multiprocess=False):
     if not os.path.exists(DATA_DIR):
         os.mkdir(DATA_DIR)
     else:
@@ -147,19 +161,13 @@ def generate_batch_gnn_training_data(idx_range=None):
         legal_points = pkl.load(f)
     random.shuffle(legal_points, lambda : 0.42)  # fixed random seed
     if idx_range == None:
-        idx_range = range(len(legal_points))
-    for i in idx_range:
-        design_point, model_parameters = legal_points[i]
-        try:
-            training_data_list = generate_single_gnn_training_data(design_point, model_parameters)
-            for j, training_data in enumerate(training_data_list):
-                with open(os.path.join(DATA_DIR, f"{i}_{j}.pickle"), 'wb') as f:
-                    pkl.dump(training_data, f)
-        except KeyboardInterrupt:
-            exit(1)
-        except:
-            logger.debug("Error in generating data")
-            continue
+        idx_range = len(legal_points)
+    if multiprocess:
+        with multiprocessing.Pool(64) as pool:
+            pool.map(wrapper_generate_single_gnn_training_data, enumerate(legal_points[:idx_range]))
+    else:
+        for x in enumerate(legal_points[:idx_range]):
+            wrapper_generate_single_gnn_training_data(x)
 
 def test_dataloader():
     dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
@@ -167,5 +175,5 @@ def test_dataloader():
         logger.debug(data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_training_data(idx_range=range(100))
+    generate_batch_gnn_training_data(idx_range=2000, multiprocess=True)
     test_dataloader()
