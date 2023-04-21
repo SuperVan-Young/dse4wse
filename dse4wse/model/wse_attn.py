@@ -564,6 +564,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
+        self.wse_evaluator_class = LpReticleLevelWseEvaluator
     
     def __alloc_new_dram_port(self):
         vdp = deepcopy(self.__virtual_dram_port_counter)
@@ -722,7 +723,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     
     def __run_wse_task(self, wse_task: ListWaferTask) -> float:
         mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+        wse_evaluator = self.wse_evaluator_class(self.wafer_scale_engine, wse_task, mapper)
         return wse_evaluator.get_total_latency()
 
     def _get_task_lists(self, inference: bool) -> Dict[str, List]:
@@ -750,7 +751,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
             task_list = sum(task_lists.values(), [])
             wse_task = ListWaferTask(task_list)
             mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-            wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+            wse_evaluator = self.wse_evaluator_class(self.wafer_scale_engine, wse_task, mapper)
             total_latency = wse_evaluator.get_total_latency()
             idle_latency = (self.layer_pipeline_size - 1) / (self.micro_batch_size // self.nano_batch_size) * total_latency
             if detailed_report:
@@ -791,7 +792,7 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         task_list = sum(task_lists.values(), [])
         wse_task = ListWaferTask(task_list)
         mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
-        wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
+        wse_evaluator = self.wse_evaluator_class(self.wafer_scale_engine, wse_task, mapper)
         total_latency = wse_evaluator.get_total_latency()  # in peak power, we ignore layer pipeline bubble
 
         # debug

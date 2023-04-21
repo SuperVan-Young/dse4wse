@@ -13,6 +13,9 @@ import torch as th
 from itertools import chain, product
 from functools import reduce
 import math
+import random
+import torch
+import torch.nn as nn
 
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import BaseReticleTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
@@ -471,10 +474,12 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         subtasks = [task for task in self.task if task.virtual_reticle_id == virtual_reticle_id]
         compute_amount = sum([task.compute_amount for task in subtasks if task.task_type == 'compute'])
         transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task.task_type == 'peer_access'])
+        
         num_total_flit = get_num_flit(transmission_amount)
+        compute_latency = compute_amount / self.hardware.reticle_compute_power
+        ideal_transmission_latency = transmission_amount / self.hardware.inter_reticle_bandwidth
 
-        compute_transmission_ratio = (compute_amount / self.hardware.reticle_compute_power) / (transmission_amount / self.hardware.inter_reticle_bandwidth)
-        compute_transmission_ratio = np.log(compute_transmission_ratio)
+        compute_transmission_ratio =  np.log(compute_amount / ideal_transmission_latency)
 
         for u, v, edata in g.edges(data=True):
             if not virtual_reticle_id in edata['transmission_mark']:
@@ -508,5 +513,26 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             "graph_feat": compute_transmission_ratio,
             "label": num_flit_per_service, 
             "num_total_flit": num_total_flit,
+            "compute_latency": compute_latency,
         }
         
+class GnnReticleLevelWseEvaluator(LpReticleLevelWseEvaluator):
+    def __init__(self, hardware: WaferScaleEngine, task: ListWaferTask, mapper: WseMapper, gnn_model: nn.Module) -> None:
+        super().__init__(hardware, task, mapper)
+        self.gnn_model = gnn_model
+
+    def get_total_latency(self) -> float:
+        # randomly choose several virtual reticle id
+        vrids = [vrid for vrid in self.vrid_2_var]
+        random.shuffle(vrids)
+        num_test_vrid = min(10, len(vrids))
+
+        total_latency = 0
+        for vrid in vrids[:num_test_vrid]:
+            gnn_data = self.dump_graph_v2(vrid)
+            pred = self.gnn_model(gnn_data['graph'], gnn_data['graph_feat'])
+            transmission_latency = pred * gnn_data['num_total_flit']
+            total_latency_ = max(transmission_latency, gnn_data['compute_latency'])
+            total_latency = max(total_latency_, total_latency)
+
+        return total_latency
