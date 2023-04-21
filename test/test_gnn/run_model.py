@@ -7,17 +7,18 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 import torch
 import dgl
 import torch.nn.functional as F
+from tqdm import tqdm
 
-from dse4wse.gnn.dataloader import LinkUtilDataset
-from dse4wse.gnn.model import HeteroNet
+from dse4wse.gnn.dataloader import NoCeptionDataset
+from dse4wse.gnn.model import NoCeptionNet
 from dse4wse.utils import logger
 
 def get_dataset():
-    dataset = LinkUtilDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+    dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
     return dataset
 
 def get_model():
-    model = HeteroNet(h_dim=128)
+    model = NoCeptionNet(h_dim=64, n_layer=2, act_func='elu')
     return model
 
 def run_model():
@@ -34,9 +35,8 @@ def train_model(model, dataset):
     for epoch in range(NUM_EPOCH):
         total_loss = 0
 
-        for data in dataset:
-            logits = model(data)
-            label = data.nodes['link'].data['label'].reshape(-1, 1).float()
+        for g, label in tqdm(dataset):
+            logits = model(g)
             # loss = F.mse_loss(logits, label)
             loss = F.smooth_l1_loss(logits, label)
             loss.backward()
@@ -53,9 +53,8 @@ def test_model(model, dataset):
     total_mae = 0
 
     with torch.no_grad():
-        for data in dataset:
-            logits = model(data)
-            label = data.nodes['link'].data['label'].reshape(-1, 1).float()
+        for g, label in dataset:
+            logits = model(g)
             mae = torch.abs(logits - label).mean()
             total_mae += mae.item()
             # logger.debug(f"MAE: {mae}")

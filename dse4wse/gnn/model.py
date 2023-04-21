@@ -137,3 +137,65 @@ class HeteroNet(nn.Module):
         logits = self.head(h)
         logits = torch.sigmoid(logits)
         return logits
+    
+class NoCeptionNet(nn.Module):
+    def __init__(self,
+                 h_dim: int,
+                 n_layer: int,
+                 act_func: str = 'relu',
+                 *args, 
+                 **kwargs,
+                 ) -> None:
+        super().__init__(*args, **kwargs)
+        self.h_dim = h_dim
+        assert h_dim % 2 == 0
+        self.node_inp_linear = nn.Linear(2, h_dim)
+        self.edge_inp_linear = nn.Linear(2, h_dim)
+        self.mi_linears = []
+        self.mo_linears = []
+        self.n_layer = n_layer
+        for _ in range(n_layer):
+            self.mi_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
+            self.mo_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
+        if act_func == "relu":
+            self.act_func = nn.ReLU()
+        elif act_func == 'elu':
+            self.act_func = nn.ELU()
+        else:
+            raise NotImplementedError
+        self.gap = dglnn.GlobalAttentionPooling(nn.Linear(h_dim, 1), nn.Linear(h_dim, h_dim))
+        self.final_mlp = nn.Sequential(
+            nn.Linear(h_dim, h_dim),
+            self.act_func,
+            nn.Linear(h_dim, 1)
+        )
+
+    def forward(self, G: dgl.graph):
+        # convert input to hidden
+        G.ndata['h'] = self.act_func(self.node_inp_linear(G.ndata['inp']))
+        G.edata['h'] = self.act_func(self.edge_inp_linear(G.edata['inp']))
+
+        G_ = dgl.reverse(G, copy_ndata=True, copy_edata=True)
+
+        for l in range(self.n_layer):
+            G.edata['ti'] = self.act_func(self.mi_linears[l](G.edata['h']).reshape(-1, self.h_dim // 2, self.h_dim))
+            G_.edata['to'] = self.act_func(self.mo_linears[l](G_.edata['h']).reshape(-1, self.h_dim // 2, self.h_dim))
+            def mi_func(edges):
+                m = edges.data['ti'] @ edges.dst['h'].unsqueeze(-1)
+                m = m.squeeze(-1)
+                return {'m': m}
+            def mo_func(edges):
+                m = edges.data['to'] @ edges.dst['h'].unsqueeze(-1)
+                m = m.squeeze(-1)
+                return {'m': m}
+            G.update_all(mi_func, fn.sum('m', 'mi'))
+            G_.update_all(mo_func, fn.sum('m', 'mo'))
+
+            h = G.ndata['h']
+            m = torch.concat((G.ndata['mi'], G_.ndata['mo']), dim=-1)
+            G.ndata['h'] = self.act_func(h + m)
+
+        graph_feat = self.gap(G, G.ndata['h']).squeeze(0)
+        graph_feat = self.final_mlp(graph_feat).squeeze()
+        return graph_feat
+        
