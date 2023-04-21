@@ -47,8 +47,6 @@ class WseTransformerRunner():
                  zero_dp_g: bool = True,
                  zero_dp_p: bool = False,
                  zero_r_pa: bool = True,
-                 num_reticle_per_model_chunk: int = 1,
-                 weight_streaming: bool = True,
                  **kwargs,
                  ) -> None:
         # model parameters
@@ -66,7 +64,7 @@ class WseTransformerRunner():
         self.data_parallel_size = data_parallel_size      # inter-wafer
         self.model_parallel_size = model_parallel_size    # inter-wafer
         self.tensor_parallel_size = tensor_parallel_size  # intra-wafer
-        self.num_reticle_per_model_chunk = num_reticle_per_model_chunk
+        self.num_reticle_per_model_chunk = wafer_scale_engine.reticle_array_height * wafer_scale_engine.reticle_array_width // self.tensor_parallel_size
         # check valid model chunking
         assert number_of_layers % model_parallel_size == 0
         assert hidden_size % tensor_parallel_size == 0
@@ -132,10 +130,16 @@ class WseTransformerRunner():
                 self.nano_batch_size = nano_batch_size
                 break
             if self.nano_batch_size:
-                assert self.weight_streaming
-                assert self.nano_batch_size
-                assert self.layer_pipeline_size
-                assert self.weight_swapping_factor
+                assert self.weight_streaming is not None
+                assert self.nano_batch_size is not None
+                assert self.layer_pipeline_size is not None
+                assert self.weight_swapping_factor is not None
+                # logger.debug(f"Found valid nano batch size = {self.nano_batch_size}")
+                # logger.debug(f"weight streaming: {self.weight_streaming}")
+                # logger.debug(f"weight of model chunk: {self._get_weight_numel_per_model_chunk() * self.training_config.get_precision_size() / 1e6} MB")
+                # logger.debug(f"sram usage = {self._get_sram_usage(inference, self.nano_batch_size, self.layer_pipeline_size, self.weight_streaming) / 1e6} MB")
+                # logger.debug(f"sram size = {Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk / 1e6} MB")
+                # logger.debug(f"can it do layer pipelining? {self.get_sram_utilization(inference, self.nano_batch_size, 1, False)}")
                 return
 
         # swap more weight when 1 seq cannot be withheld
@@ -145,10 +149,16 @@ class WseTransformerRunner():
         assert act_size > sram_size
         self.weight_swapping_factor = ceil(act_size / sram_size)
 
-        assert self.weight_streaming
-        assert self.nano_batch_size
-        assert self.layer_pipeline_size
-        assert self.weight_swapping_factor
+        assert self.weight_streaming is not None
+        assert self.nano_batch_size is not None
+        assert self.layer_pipeline_size is not None
+        assert self.weight_swapping_factor is not None
+        # logger.debug(f"Found valid nano batch size = {self.nano_batch_size}")
+        # logger.debug(f"weight streaming: {self.weight_streaming}")
+        # logger.debug(f"weight of model chunk: {self._get_weight_numel_per_model_chunk() * self.training_config.get_precision_size() / 1e6} MB")
+        # logger.debug(f"sram usage = {self._get_sram_usage(inference, self.nano_batch_size, self.layer_pipeline_size, self.weight_streaming)}")
+        # logger.debug(f"sram size = {Reticle.get_sram_size(self.wafer_scale_engine.reticle_config) * self.num_reticle_per_model_chunk}")
+        # logger.debug(f"can it do layer pipelining? {self.get_sram_utilization(inference, self.nano_batch_size, 1, False)}")
 
     # helper functions for API
 
@@ -358,9 +368,9 @@ class WseTransformerRunner():
         if nano_batch_size is None: nano_batch_size = self.nano_batch_size
         if layer_pipeline_size is None: layer_pipeline_size = self.layer_pipeline_size
         if weight_streaming is None: weight_streaming = self.weight_streaming
-        assert nano_batch_size
-        assert layer_pipeline_size
-        assert weight_streaming
+        assert nano_batch_size is not None
+        assert layer_pipeline_size is not None
+        assert weight_streaming is not None
 
         attn_act_size = self._get_attn_activation_numel_per_model_chunk_per_seq_per_layer() * precision
         ffn_act_size = self._get_ffn_activation_numel_per_model_chunk_per_seq_per_layer() * precision
@@ -384,7 +394,10 @@ class WseTransformerRunner():
                 return weight_size + act_size
             else:
                 # each layer pipeline stage need to buffer the same number of nano batch as the depth of pipeline
-                checkpoint_size = layer_pipeline_size * (layer_pipeline_size * nano_batch_size) * self.sequence_length * self.hidden_size
+                if layer_pipeline_size == 1:
+                    checkpoint_size = 0
+                else:
+                    checkpoint_size = layer_pipeline_size * (layer_pipeline_size * nano_batch_size) * self.sequence_length * self.hidden_size
                 return checkpoint_size + weight_size + act_size
 
     
@@ -555,10 +568,9 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
                  zero_dp_g: bool = True, 
                  zero_dp_p: bool = False, 
                  zero_r_pa: bool = True, 
-                 num_reticle_per_model_chunk: int = 1,
                  **kwargs,
                  ) -> None:
-        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_model_chunk, **kwargs)
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, **kwargs)
         self.num_pipeline_stage_per_wafer = 1   # stay compatible with old codes
         self.virtual_reticle_id_2_parallel_index = {i: (m, t, r) for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
