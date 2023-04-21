@@ -20,7 +20,7 @@ from dse4wse.pe_graph.task import (
     BaseReticleTask,
 )
 from dse4wse.pe_graph.mapper import get_default_mapper
-from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator
+from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator, GnnReticleLevelWseEvaluator
 from dse4wse.utils import TensorInfo, TrainingConfig, logger, factoring
 
 BFLOAT16 = 10
@@ -837,3 +837,33 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         logger.debug(f"total power: {total_power} W")
 
         return total_power
+    
+class GnnReticleFidelityWseTransformerRunner(ReticleFidelityWseTransformerRunner):
+    def __init__(self, 
+                 attention_heads: int, 
+                 hidden_size: int, 
+                 sequence_length: int, 
+                 number_of_layers: int, 
+                 micro_batch_size: int, 
+                 mini_batch_size: int, 
+                 data_parallel_size: int, 
+                 model_parallel_size: int, 
+                 tensor_parallel_size: int, 
+                 wafer_scale_engine: WaferScaleEngine, 
+                 training_config: TrainingConfig, 
+                 inter_wafer_bandwidth: int | None = None, 
+                 zero_dp_os: bool = True, 
+                 zero_dp_g: bool = True, 
+                 zero_dp_p: bool = False, 
+                 zero_r_pa: bool = True, 
+                 gnn_model_path: str = None,
+                 **kwargs) -> None:
+        super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, **kwargs)
+        self.gnn_model_path = gnn_model_path
+
+    @property
+    def wse_evaluator_class(self):
+        gnn_model = torch.load(self.gnn_model_path)
+        def __inner_func(hardware, task, mapper):
+            return GnnReticleFidelityWseTransformerRunner(hardware, task, mapper, gnn_model)
+        return __inner_func
