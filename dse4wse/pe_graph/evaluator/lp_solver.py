@@ -470,7 +470,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # rebuild info, we only consider link with maximum transmission amount
         subtasks = [task for task in self.task if task.virtual_reticle_id == virtual_reticle_id]
         compute_amount = sum([task.compute_amount for task in subtasks if task.task_type == 'compute'])
-        transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task,task_type == 'peer_access'])
+        transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task.task_type == 'peer_access'])
         num_total_flit = get_num_flit(transmission_amount)
 
         compute_transmission_ratio = (compute_amount / self.hardware.reticle_compute_power) / (transmission_amount / self.hardware.inter_reticle_bandwidth)
@@ -505,7 +505,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             "edge_dsts": edge_dsts, 
             "node_feats": node_feats, 
             "edge_feats": edge_feats, 
-            "graph_feat": graph_feat,
+            "graph_feat": compute_transmission_ratio,
             "label": num_flit_per_service, 
             "num_total_flit": num_total_flit,
         }

@@ -150,7 +150,7 @@ class NoCeptionNet(nn.Module):
         self.h_dim = h_dim
         assert h_dim % 2 == 0
         self.node_inp_linear = nn.Linear(2, h_dim)
-        self.edge_inp_linear = nn.Linear(2, h_dim)
+        self.edge_inp_linear = nn.Linear(1, h_dim)
         self.mi_linears = []
         self.mo_linears = []
         self.n_layer = n_layer
@@ -164,13 +164,11 @@ class NoCeptionNet(nn.Module):
         else:
             raise NotImplementedError
         self.gap = dglnn.GlobalAttentionPooling(nn.Linear(h_dim, 1), nn.Linear(h_dim, h_dim))
-        self.final_mlp = nn.Sequential(
-            nn.Linear(h_dim, h_dim),
-            self.act_func,
-            nn.Linear(h_dim, 1)
-        )
+        self.gap_linear = nn.Linear(h_dim, h_dim)
+        self.graph_feat_linear = nn.Linear(1, h_dim)
+        self.final_linear = nn.Linear(2 * h_dim, 1)
 
-    def forward(self, G: dgl.graph):
+    def forward(self, G: dgl.graph, graph_feat):
         # convert input to hidden
         G.ndata['h'] = self.act_func(self.node_inp_linear(G.ndata['inp']))
         G.edata['h'] = self.act_func(self.edge_inp_linear(G.edata['inp']))
@@ -195,7 +193,11 @@ class NoCeptionNet(nn.Module):
             m = torch.concat((G.ndata['mi'], G_.ndata['mo']), dim=-1)
             G.ndata['h'] = self.act_func(h + m)
 
-        graph_feat = self.gap(G, G.ndata['h']).squeeze(0)
-        graph_feat = self.final_mlp(graph_feat).squeeze()
-        return graph_feat
+        gap_feat = self.gap(G, G.ndata['h']).squeeze(0)
+        h0 = self.gap_linear(gap_feat)
+        h1 = self.graph_feat_linear(graph_feat)
+        h = torch.cat((h0, h1), dim=-1)
+        h = self.act_func(h)
+        pred = self.final_linear(h)
+        return pred
         

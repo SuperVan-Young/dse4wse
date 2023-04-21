@@ -163,8 +163,8 @@ def generate_batch_gnn_training_data(idx_range=None):
 
 def test_dataloader():
     dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
-    for G, label, _ in dataset:
-        logger.debug(f"label: {label}")
+    for data in dataset:
+        logger.debug(data)
 
 if __name__ == "__main__":
     generate_batch_gnn_training_data(idx_range=range(100))

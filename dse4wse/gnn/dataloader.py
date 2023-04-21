@@ -46,8 +46,8 @@ class NoCeptionDataset(DGLDataset):
         G = dgl.graph(graph_data)
         G.ndata['inp'] = torch.tensor(data['node_feats'], dtype=torch.float32)
         G.edata['inp'] = torch.tensor(data['edge_feats'], dtype=torch.float32)
-        graph_feat = torch.tensor(data['graph_feat'], dtype=torch.float32)
-        label = torch.tensor(data['label'], dtype=torch.float32)
+        graph_feat = torch.tensor(data['graph_feat'], dtype=torch.float32).reshape(1)
+        label = torch.tensor(data['label'], dtype=torch.float32).reshape(1)
         
         ret = {
             'graph': G,
@@ -55,6 +55,7 @@ class NoCeptionDataset(DGLDataset):
             'label': label,
             'num_total_flit': data['num_total_flit'],
         }
+        return ret
     
     def __len__(self):
         num_files = len(self.data_names)
