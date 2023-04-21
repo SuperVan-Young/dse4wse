@@ -430,7 +430,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
 
         # find all relevant nodes and build a subgraph
         target_nodes = {u for u, v, edata in G.edges(data=True) if virtual_reticle_id in edata['transmission_mark']}
-        target_neighbors = reduce(lambda x, y: x | y, [set(G.neighbors(u)) for u in target_nodes], {})
+        target_neighbors = reduce(lambda x, y: x | y, [set(G.neighbors(u)) for u in target_nodes], set())
         target_nodes = target_nodes | target_neighbors
         g = G.subgraph(target_nodes)
         g: nx.DiGraph
@@ -447,10 +447,9 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             feat = np.array(onehot)
             node_feats.append(feat)
         node_feats = np.stack(node_feats, axis=0, dtype='float')
-
         
+        WSE_FREQUENCY = 1e9
         def get_num_flit(data_amount):
-            WSE_FREQUENCY = 1e9
             flit_size = self.hardware.inter_reticle_bandwidth / WSE_FREQUENCY  # byte
             num_flit = math.ceil(data_amount / flit_size) + 1
             return num_flit
@@ -460,7 +459,8 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         for u, v, edata in g.edges(data=True):
             num_flit = sum([get_num_flit(d) for d in edata['transmission_mark'].values()])
             num_flow = len(edata['transmission_mark'])
-            feat = np.array([num_flit, num_flow])
+            t = num_flit / WSE_FREQUENCY  # scales to some normal range
+            feat = np.array([t, num_flow])
             edge_feats.append(feat)
         edge_feats = np.stack(edge_feats, axis=0, dtype='float')
 
@@ -476,11 +476,17 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             vrid_2_num_relative_flit = {vrid: f / flit_of_current_task for vrid, f in vrid_2_num_flit.items()}
 
             bw_util = sum([d for d in edata['transmission_mark'].values()]) * min_freq / inter_reticle_bandwidth
-            num_flit_per_service = sum(num_relative_flit.values()) * bw_util + (1 - bw_util)
+            num_flit_per_service = sum(vrid_2_num_relative_flit.values()) * bw_util + (1 - bw_util)
             # this represents how many flit this link has to send to actually send a flit of this vrid
 
-            latency_of_this_link = num_flit_per_service * flit_of_current_task
+            latency_of_this_link = num_flit_per_service * flit_of_current_task / WSE_FREQUENCY
             end2end_latency = max(end2end_latency, latency_of_this_link)  # in terms of flit, so you need to restore it to sec
             # so we don't consider latency due to every hop
+
+        logger.debug(f"edge_srcs = {edge_srcs}")
+        logger.debug(f"edge_dsts = {edge_dsts}")
+        logger.debug(f"node_feats = {node_feats}")
+        logger.debug(f"edge_feats = {edge_feats}")
+        logger.debug(f"end2end_latency = {end2end_latency}")
         
         return edge_srcs, edge_dsts, node_feats, edge_feats, end2end_latency

@@ -3,6 +3,7 @@ import dgl
 from dgl.data import DGLDataset
 import os
 import pickle as pkl
+import torch
 
 class LinkUtilDataset(DGLDataset):
     def __init__(self, url=None, raw_dir=None, save_dir=None, hash_key=..., force_reload=False, verbose=False, transform=None):
@@ -35,3 +36,15 @@ class NoCeptionDataset(DGLDataset):
     def __init__(self, url=None, raw_dir=None, save_dir=None, hash_key=..., force_reload=False, verbose=False, transform=None):
         name = 'NoCeption Dataset'
         super().__init__(name, url, raw_dir, save_dir, hash_key, force_reload, verbose, transform)
+        self.data_names = [f for f in os.listdir(self.save_dir) if os.path.isfile(os.path.join(self.save_dir, f))]
+
+    def get_item(self, idx):
+        data_path = os.path.join(self.save_dir, self.data_names[idx])
+        with open(data_path, 'rb') as f:
+            edge_srcs, edge_dsts, node_feats, edge_feats, end2end_latency = pkl.load(f)
+        graph_data = [torch.tensor(edge_srcs), torch.tensor(edge_dsts)]
+        G = dgl.graph(graph_data)
+        G.ndata['inp'] = torch.tensor(node_feats)
+        G.edata['inp'] = torch.tensor(edge_feats)
+        label = torch.tensor(end2end_latency)
+        return G, label

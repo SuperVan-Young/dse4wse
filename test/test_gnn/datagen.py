@@ -4,7 +4,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from typing import Union, Dict
+from typing import Union, Dict, List
 import pickle as pkl
 import numpy as np
 import random
@@ -23,12 +23,13 @@ class GnnDataGenTransformerRunner(ReticleFidelityWseTransformerRunner):
     def __init__(self, attention_heads: int, hidden_size: int, sequence_length: int, number_of_layers: int, micro_batch_size: int, mini_batch_size: int, data_parallel_size: int, model_parallel_size: int, tensor_parallel_size: int, wafer_scale_engine: WaferScaleEngine, training_config: TrainingConfig, inter_wafer_bandwidth: Union[int, None] = None, zero_dp_os: bool = True, zero_dp_g: bool = True, zero_dp_p: bool = False, zero_r_pa: bool = True, num_reticle_per_pipeline_stage: int = 1, **kwargs) -> None:
         super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, num_reticle_per_pipeline_stage, **kwargs)
 
-    def get_gnn_training_data(self, inference: bool=False, num_data: int=1) -> List[...]:
+    def get_gnn_training_data(self, inference: bool=False, num_data: int=1) -> List:
         """ Modified from get_propagation_latency
         """
         assert self.is_overlap
 
-        task_lists = self._get_task_lists(inference=False)
+        self._find_best_intra_model_chunk_exec_params(inference=inference)
+        task_lists = self._get_task_lists(inference=inference)
         task_list = sum(task_lists.values(), [])
         wse_task = ListWaferTask(task_list)
         mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
@@ -57,6 +58,7 @@ def create_wafer_scale_engine(
     reticle_array_h: int,
     reticle_array_w: int,
     dram_stacking_type: str = '2d',
+    **kwargs,
 ) -> WaferScaleEngine:
     """ Variable naming follows previous conventions
     """
@@ -97,6 +99,7 @@ def create_evaluator(
     data_parallel_size: int = 1,
     model_parallel_size: int = 1,
     tensor_parallel_size: int = 1,
+    **kwargs,
 ):
     """ Modified from dse/api.py same-name function
     """
@@ -120,13 +123,13 @@ def create_evaluator(
 
     return wse_transformer_runner
 
-def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict) -> List[...]:
+def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict) -> List:
     logger.info(f"Design point: {design_point}")
     logger.info(f"Model parameters: {model_parameters}")
 
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
     evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
-    training_data_list = evaluator.get_gnn_training_data(num_data=10)
+    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=10)
 
     return training_data_list
 
@@ -134,8 +137,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 if not os.path.exists(DATA_DIR):
     os.mkdir(DATA_DIR)
 else:
-    os.rmdir(DATA_DIR)
-    os.mkdir(DATA_DIR)
+    for file in os.listdir(DATA_DIR):
+        os.remove(os.path.join(DATA_DIR, file))
 
 def generate_batch_gnn_training_data(idx_range=None):
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
@@ -147,8 +150,8 @@ def generate_batch_gnn_training_data(idx_range=None):
         design_point, model_parameters = legal_points[i]
         try:
             training_data_list = generate_single_gnn_training_data(design_point, model_parameters)
-            for training_data in training_data_list:
-                with open(os.path.join(DATA_DIR, f"{i}.pickle"), 'wb') as f:
+            for j, training_data in enumerate(training_data_list):
+                with open(os.path.join(DATA_DIR, f"{i}_{j}.pickle"), 'wb') as f:
                     pkl.dump(training_data, f)
         except KeyboardInterrupt:
             exit(1)
