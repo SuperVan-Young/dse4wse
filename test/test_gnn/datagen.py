@@ -8,6 +8,7 @@ from typing import Union, Dict, List
 import pickle as pkl
 import numpy as np
 import random
+import torch
 
 from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner
 from dse4wse.utils import TrainingConfig, logger
@@ -17,7 +18,7 @@ from dse4wse.pe_graph.task import (
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.mapper import get_default_mapper
 from dse4wse.pe_graph.evaluator import LpReticleLevelWseEvaluator
-from dse4wse.gnn.dataloader import LinkUtilDataset
+from dse4wse.gnn.dataloader import NoCeptionDataset
 
 class GnnDataGenTransformerRunner(ReticleFidelityWseTransformerRunner):
     def __init__(self, attention_heads: int, hidden_size: int, sequence_length: int, number_of_layers: int, micro_batch_size: int, mini_batch_size: int, data_parallel_size: int, model_parallel_size: int, tensor_parallel_size: int, wafer_scale_engine: WaferScaleEngine, training_config: TrainingConfig, inter_wafer_bandwidth: Union[int, None] = None, zero_dp_os: bool = True, zero_dp_g: bool = True, zero_dp_p: bool = False, zero_r_pa: bool = True, num_reticle_per_pipeline_stage: int = 1, **kwargs) -> None:
@@ -134,13 +135,14 @@ def generate_single_gnn_training_data(design_point: Dict, model_parameters: Dict
     return training_data_list
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-if not os.path.exists(DATA_DIR):
-    os.mkdir(DATA_DIR)
-else:
-    for file in os.listdir(DATA_DIR):
-        os.remove(os.path.join(DATA_DIR, file))
 
 def generate_batch_gnn_training_data(idx_range=None):
+    if not os.path.exists(DATA_DIR):
+        os.mkdir(DATA_DIR)
+    else:
+        for file in os.listdir(DATA_DIR):
+            os.remove(os.path.join(DATA_DIR, file))
+
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
         legal_points = pkl.load(f)
     random.shuffle(legal_points, lambda : 0.42)  # fixed random seed
@@ -160,10 +162,10 @@ def generate_batch_gnn_training_data(idx_range=None):
             continue
 
 def test_dataloader():
-    dataset = LinkUtilDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
-    test_data = dataset[0]
-    logger.debug(test_data)
+    dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+    for G, label, _ in dataset:
+        logger.debug(f"label: {label}")
 
 if __name__ == "__main__":
     generate_batch_gnn_training_data(idx_range=range(100))
-    # test_dataloader()
+    test_dataloader()

@@ -417,11 +417,12 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         Edges: passing edges and links connecting 1-hop neighbors
         Node features: vector of length 2
             - Does this core have computation task? (one-hot)
-        Edge features: vector of length 2
-            - total transmission amount: in terms of flit
+        Edge features: vector of length 1
             - total number of flow
         Graph-level regression target:
             - calculated total latency.
+        Info to rebuild total latency:
+            - total transmission amount
         """
         assert virtual_reticle_id < len(self.vrid_2_var)
 
@@ -457,16 +458,23 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # build edge feats
         edge_feats = []
         for u, v, edata in g.edges(data=True):
-            num_flit = sum([get_num_flit(d) for d in edata['transmission_mark'].values()])
             num_flow = len(edata['transmission_mark'])
-            t = num_flit / WSE_FREQUENCY  # scales to some normal range
-            feat = np.array([t, num_flow])
+            feat = np.array([num_flow])
             edge_feats.append(feat)
         edge_feats = np.stack(edge_feats, axis=0, dtype='float')
 
         # build graph level regression target
         inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
-        end2end_latency = 0
+        num_flit_per_service = 0
+
+        # rebuild info, we only consider link with maximum transmission amount
+        subtasks = [task for task in self.task if task.virtual_reticle_id == virtual_reticle_id]
+        compute_amount = sum([task.compute_amount for task in subtasks if task.task_type == 'compute'])
+        transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task,task_type == 'peer_access'])
+        num_total_flit = get_num_flit(transmission_amount)
+
+        compute_transmission_ratio = (compute_amount / self.hardware.reticle_compute_power) / (transmission_amount / self.hardware.inter_reticle_bandwidth)
+        compute_transmission_ratio = np.log(compute_transmission_ratio)
 
         for u, v, edata in g.edges(data=True):
             if not virtual_reticle_id in edata['transmission_mark']:
@@ -476,17 +484,29 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             vrid_2_num_relative_flit = {vrid: f / flit_of_current_task for vrid, f in vrid_2_num_flit.items()}
 
             bw_util = sum([d for d in edata['transmission_mark'].values()]) * min_freq / inter_reticle_bandwidth
-            num_flit_per_service = sum(vrid_2_num_relative_flit.values()) * bw_util + (1 - bw_util)
+            num_flit_per_service_ = sum(vrid_2_num_relative_flit.values()) * bw_util + (1 - bw_util)
             # this represents how many flit this link has to send to actually send a flit of this vrid
 
-            latency_of_this_link = num_flit_per_service * flit_of_current_task / WSE_FREQUENCY
-            end2end_latency = max(end2end_latency, latency_of_this_link)  # in terms of flit, so you need to restore it to sec
-            # so we don't consider latency due to every hop
+            # to rebuild total latency of this link, we must normalize this factor proportional to data amount ratio
+            num_flit_per_service = max(num_flit_per_service, num_flit_per_service_ * (flit_of_current_task / num_total_flit))
 
-        logger.debug(f"edge_srcs = {edge_srcs}")
-        logger.debug(f"edge_dsts = {edge_dsts}")
-        logger.debug(f"node_feats = {node_feats}")
-        logger.debug(f"edge_feats = {edge_feats}")
-        logger.debug(f"end2end_latency = {end2end_latency}")
+        # logger.debug(f"edge_srcs = {edge_srcs}")
+        # logger.debug(f"edge_dsts = {edge_dsts}")
+        # logger.debug(f"node_feats = {node_feats}")
+        # logger.debug(f"edge_feats = {edge_feats}")
+        # logger.debug(f"num_flit_per_service = {num_flit_per_service}")
+        # logger.debug(f"num_total_flit = {num_total_flit}")
+
+        if num_flit_per_service > 50:
+            logger.debug(self.task)
+
+        return {
+            "edge_srcs": edge_srcs, 
+            "edge_dsts": edge_dsts, 
+            "node_feats": node_feats, 
+            "edge_feats": edge_feats, 
+            "graph_feat": graph_feat,
+            "label": num_flit_per_service, 
+            "num_total_flit": num_total_flit,
+        }
         
-        return edge_srcs, edge_dsts, node_feats, edge_feats, end2end_latency

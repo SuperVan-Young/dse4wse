@@ -41,13 +41,20 @@ class NoCeptionDataset(DGLDataset):
     def __getitem__(self, idx):
         data_path = os.path.join(self.save_dir, self.data_names[idx])
         with open(data_path, 'rb') as f:
-            edge_srcs, edge_dsts, node_feats, edge_feats, end2end_latency = pkl.load(f)
-        graph_data = (edge_srcs, edge_dsts)
+            data = pkl.load(f)
+        graph_data = (data["edge_srcs"], data["edge_dsts"])
         G = dgl.graph(graph_data)
-        G.ndata['inp'] = torch.tensor(node_feats, dtype=torch.float32)
-        G.edata['inp'] = torch.tensor(edge_feats, dtype=torch.float32)
-        label = torch.tensor(end2end_latency)
-        return G, label
+        G.ndata['inp'] = torch.tensor(data['node_feats'], dtype=torch.float32)
+        G.edata['inp'] = torch.tensor(data['edge_feats'], dtype=torch.float32)
+        graph_feat = torch.tensor(data['graph_feat'], dtype=torch.float32)
+        label = torch.tensor(data['label'], dtype=torch.float32)
+        
+        ret = {
+            'graph': G,
+            'graph_feat': graph_feat,
+            'label': label,
+            'num_total_flit': data['num_total_flit'],
+        }
     
     def __len__(self):
         num_files = len(self.data_names)
