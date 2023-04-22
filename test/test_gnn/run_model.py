@@ -34,7 +34,7 @@ def train_model(model, dataset, batch_size=32):
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
-    lr_schduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCH, eta_min=1e-5)
+    lr_schduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=3, threshold=1e-3)
 
     for epoch in range(NUM_EPOCH):
         total_loss = 0
@@ -51,36 +51,43 @@ def train_model(model, dataset, batch_size=32):
             tqdm_bar.set_description(f"avg loss: {total_loss / i}")
 
             if i % batch_size == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
                 for param in model.parameters():
                     param.grad /= batch_size
                 optimizer.step()
                 optimizer.zero_grad()
 
-        lr_schduler.step()
+        lr_schduler.step(total_loss / len(dataset))
 
         logger.info(f"Epoch {epoch}:")
-        logger.debug(f"learning rate: {lr_schduler.get_last_lr()}")
+        logger.debug(f"learning rate: {lr_schduler._last_lr}")
         logger.debug(f"average loss: {total_loss / len(dataset)}")
 
         torch.save(model.state_dict(), checkpoint_path)
 
 def test_model(model, dataset):
     total_mae = 0
+    total_mape = 0
 
     with torch.no_grad():
         for data in tqdm(dataset):
             logits = model(data['graph'], data['graph_feat'])
             label = data['label']
             mae = torch.abs(logits - label).mean()
+            mape = mae / label
             total_mae += mae.item()
+            total_mape += mape.item()
             # logger.debug(f"MAE: {mae}")
     
     avg_mae = total_mae / len(dataset)
+    avg_mape = total_mape / len(dataset)
+
     logger.debug(f"Overall MAE: {avg_mae}")
+    logger.debug(f"Overall MAPE: {avg_mape}")
 
 def main():
     model = get_model()
+    # model = get_model(os.path.join(CHECKPOINT_DIR, "model_2023-04-22-15-00-11-015813.pth"))
     train_model(model, get_dataset(training=True))
 
     model.eval()

@@ -197,6 +197,6 @@ def test_dataloader():
         logger.debug(data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_data(idx_range=2000, multiprocess=True, training=True)
+    generate_batch_gnn_data(idx_range=400, multiprocess=True, training=True)
     generate_batch_gnn_data(idx_range=200, multiprocess=True, training=False)
     # test_dataloader()

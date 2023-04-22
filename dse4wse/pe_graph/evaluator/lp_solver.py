@@ -436,8 +436,16 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         target_nodes = {u for u, v, edata in G.edges(data=True) if virtual_reticle_id in edata['transmission_mark']}
         target_neighbors = reduce(lambda x, y: x | y, [set(G.neighbors(u)) for u in target_nodes], set())
         target_nodes = target_nodes | target_neighbors
-        g = G.subgraph(target_nodes)
+        g = G.subgraph(target_nodes).copy()
         g: nx.DiGraph
+        # delete edges without transmission, and isolated nodes
+        idle_links = [(u, v) for u, v, edata in g.edges(data=True) if not edata['transmission_mark']]
+        for u, v in idle_links:
+            g.remove_edge(u, v)
+        idle_nodes = [u for u in g.nodes() if g.degree(u) == 0]
+        for u in idle_nodes:
+            g.remove_node(u)
+        assert len(g.nodes()) > 0
         node_2_alias = {u: i for i, u in enumerate(g.nodes())}
 
         # build edges

@@ -142,8 +142,9 @@ class NoCeptionNet(nn.Module):
     def __init__(self,
                  h_dim: int,
                  n_layer: int,
-                 act_func: str = 'relu',
-                 dropout: float = 0.2,
+                 act_func: str = 'elu',
+                 dropout: float = 0.1,
+                 use_norm: bool = True,  # crutial
                  *args, 
                  **kwargs,
                  ) -> None:
@@ -158,11 +159,15 @@ class NoCeptionNet(nn.Module):
         self.mo_linears = []
         self.node_norms = []
         self.edge_norms = []
-        for _ in range(n_layer):
+        self.mi_convs = []
+        self.mo_convs = []
+        for i in range(n_layer):
             self.mi_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
             self.mo_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
             self.node_norms.append(nn.LayerNorm(h_dim))
             self.edge_norms.append(nn.LayerNorm(h_dim))
+            self.mi_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mi_linears[i](edge), aggregator_type='max'))
+            self.mo_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mo_linears[i](edge), aggregator_type='max'))
 
         if act_func == "relu":
             self.act_func = nn.ReLU()
@@ -171,17 +176,14 @@ class NoCeptionNet(nn.Module):
         else:
             raise NotImplementedError
         
+        self.use_norm = use_norm
         self.drop = nn.Dropout(dropout)
         
-        # self.gap = dglnn.GlobalAttentionPooling(nn.Linear(h_dim, 1), nn.Linear(h_dim, h_dim))
-        self.gap = dglnn.GlobalAttentionPooling(nn.Linear(h_dim, 1))
-        self.gap_linear = nn.Linear(h_dim, h_dim)
-        self.graph_feat_linear = nn.Linear(1, h_dim)
+        self.readout = dglnn.MaxPooling()
         self.final_mlp = nn.Sequential(
-            nn.Linear(2 * h_dim, 1)
-            # nn.Linear(2 * h_dim, h_dim),
-            # self.act_func,
-            # nn.Linear(h_dim, 1),
+            nn.Linear(h_dim + 1, 4 * h_dim),
+            self.act_func,
+            nn.Linear(4 * h_dim, 1),
         )
 
     def forward(self, G: dgl.graph, graph_feat):
@@ -192,37 +194,16 @@ class NoCeptionNet(nn.Module):
         G_ = dgl.reverse(G, copy_ndata=True, copy_edata=True)
 
         for l in range(self.n_layer):
-            G.ndata['h_'] = self.node_norms[l](G.ndata['h'])
-            G_.ndata['h_'] = self.node_norms[l](G_.ndata['h'])
+            nfeat = G.ndata['h'] if not self.use_norm else self.node_norms[l](G.ndata['h'])
+            efeat = G.edata['h'] if not self.use_norm else self.node_norms[l](G.edata['h'])
+            mi = self.mi_convs[l](G, nfeat, efeat)
+            mo = self.mo_convs[l](G_, nfeat, efeat)
+            m = torch.concat([mi, mo], dim=-1)
+            G.ndata['h'] = self.act_func(nfeat + m)
+            # G.ndata['h'] = G.ndata['h'] + self.act_func(m)
 
-            edge_h = self.edge_norms[l](G.edata['h'])
-            ti = self.act_func(self.mi_linears[l](edge_h))
-            to = self.act_func(self.mo_linears[l](edge_h))
-            ti = self.drop(ti)
-            to = self.drop(to)
-            G.edata['ti'] = ti.reshape(-1, self.h_dim // 2, self.h_dim)
-            G_.edata['to'] = to.reshape(-1, self.h_dim // 2, self.h_dim)
-            def mi_func(edges):
-                m = edges.data['ti'] @ edges.dst['h_'].unsqueeze(-1)
-                m = m.squeeze(-1)
-                return {'m': m}
-            def mo_func(edges):
-                m = edges.data['to'] @ edges.dst['h_'].unsqueeze(-1)
-                m = m.squeeze(-1)
-                return {'m': m}
-            G.update_all(mi_func, fn.max('m', 'mi'))
-            G_.update_all(mo_func, fn.max('m', 'mo'))
-
-            node_h = G.ndata['h']
-            m = torch.concat((G.ndata['mi'], G_.ndata['mo']), dim=-1)
-            m = self.drop(m)
-            G.ndata['h'] = self.act_func(node_h + m)
-
-        gap_feat = self.gap(G, G.ndata['h']).squeeze(0)
-        gap_feat = self.drop(gap_feat)
-        h0 = self.act_func(self.gap_linear(gap_feat))
-        h1 = self.act_func(self.graph_feat_linear(graph_feat))
-        h = torch.cat((h0, h1), dim=-1)
-        pred = self.final_mlp(h)
+        readout = self.readout(G, G.ndata['h'])
+        graph_feat = torch.concat([readout, graph_feat.unsqueeze(0)], dim=-1)
+        pred = self.final_mlp(graph_feat)
         return pred
         
