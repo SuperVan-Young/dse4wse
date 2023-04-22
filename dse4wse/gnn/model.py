@@ -147,10 +147,21 @@ class NoCeptionNet(nn.Module):
                  use_norm: bool = True,  # crutial! the more the better hhh
                  use_deeper_mlp_for_edge_func: bool = False,
                  use_residual_connect: bool = False,
+                 pooling: str = 'set2set',
                  *args, 
                  **kwargs,
                  ) -> None:
         super().__init__(*args, **kwargs)
+
+        logger.info(f"h_dim: {h_dim}")
+        logger.info(f"n_layer: {n_layer}")
+        logger.info(f"act_func: {act_func}")
+        logger.info(f"dropout: {dropout}")
+        logger.info(f"use_norm: {use_norm}")
+        logger.info(f"use_deeper_mlp_for_edge_func: {use_deeper_mlp_for_edge_func}")
+        logger.info(f"use_residual_connect: {use_residual_connect}")
+        logger.debug(f"pooling: {pooling}")
+
         self.h_dim = h_dim
         assert h_dim % 2 == 0
         self.node_inp_linear = nn.Linear(2, h_dim)
@@ -198,9 +209,14 @@ class NoCeptionNet(nn.Module):
         self.drop = nn.Dropout(dropout)
         self.use_residual_connect = use_residual_connect
         
-        self.readout = dglnn.MaxPooling()
+        if pooling == 'max':
+            self.pooling = dglnn.MaxPooling()
+        elif pooling == 'set2set':
+            self.pooling = dglnn.Set2Set(self.h_dim, 1, 1)
+        else:
+            raise NotImplementedError
         self.final_mlp = nn.Sequential(
-            nn.Linear(h_dim + 1, 4 * h_dim),
+            nn.Linear(2 * h_dim + 1, 4 * h_dim) if pooling == 'set2set' else nn.Linear(h_dim + 1, 4 * h_dim),
             self.act_func,
             nn.Linear(4 * h_dim, 1),
         )
@@ -225,7 +241,7 @@ class NoCeptionNet(nn.Module):
             else:
                 G.ndata['h'] = self.act_func(nfeat + m)
 
-        readout = self.readout(G, G.ndata['h'])
+        readout = self.pooling(G, G.ndata['h'])
         graph_feat = torch.concat([readout, graph_feat.unsqueeze(0)], dim=-1)
         pred = self.final_mlp(graph_feat)
         return pred

@@ -34,7 +34,7 @@ def train_model(model, dataset, batch_size=32):
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
     logger.info(f"Model checkpoint path: {checkpoint_path}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     lr_schduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=3, threshold=1e-3)
 
     for epoch in range(NUM_EPOCH):
