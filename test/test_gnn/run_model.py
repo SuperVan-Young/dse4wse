@@ -13,8 +13,8 @@ from dse4wse.gnn.dataloader import NoCeptionDataset
 from dse4wse.gnn.model import NoCeptionNet
 from dse4wse.utils import logger
 
-def get_dataset():
-    dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+def get_dataset(training=True):
+    dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'train' if training else 'test'))
     return dataset
 
 def get_model():
@@ -27,14 +27,16 @@ def run_model():
     model(test_data)
 
 CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoint')
+if not os.path.exists(CHECKPOINT_DIR):
+    os.mkdir(CHECKPOINT_DIR)
 
 def train_model(model, dataset, batch_size=32):
-    NUM_EPOCH = 50
+    NUM_EPOCH = 1
     
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     lr_schduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCH, eta_min=1e-5)
 
     for epoch in range(NUM_EPOCH):
@@ -64,7 +66,7 @@ def train_model(model, dataset, batch_size=32):
         logger.debug(f"learning rate: {lr_schduler.get_last_lr()}")
         logger.debug(f"average loss: {total_loss / len(dataset)}")
 
-    torch.save(model.state_dict(), checkpoint_path)
+        torch.save(model.state_dict(), checkpoint_path)
 
 def test_model(model, dataset):
     total_mae = 0
@@ -81,10 +83,10 @@ def test_model(model, dataset):
     logger.debug(f"Overall MAE: {avg_mae}")
 
 def main():
-    dataset = get_dataset()
     model = get_model()
-    train_model(model, dataset)
-    test_model(model, dataset)
+    train_model(model, get_dataset(training=True))
+    test_model(model, get_dataset(training=True))
+    test_model(model, get_dataset(training=False))
 
 if __name__ == "__main__":
     main()

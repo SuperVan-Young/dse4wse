@@ -126,8 +126,16 @@ def create_evaluator(
     return wse_transformer_runner
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+TRAIN_DATA_DIR = os.path.join(DATA_DIR, 'train')
+TEST_DATA_DIR = os.path.join(DATA_DIR, 'test')
+if not os.path.exists(DATA_DIR):
+    os.mkdir(DATA_DIR)
+if not os.path.exists(TRAIN_DATA_DIR):
+    os.mkdir(TRAIN_DATA_DIR)
+if not os.path.exists(TEST_DATA_DIR):
+    os.mkdir(TEST_DATA_DIR)
 
-def generate_single_gnn_training_data(idx: int, design_point: Dict, model_parameters: Dict) -> List:
+def generate_single_gnn_data(idx: int, design_point: Dict, model_parameters: Dict, data_dir: str) -> List:
     logger.info(f"Design point idx {idx}")
     # logger.info(f"Design point: {design_point}")
     # logger.info(f"Model parameters: {model_parameters}")
@@ -138,36 +146,50 @@ def generate_single_gnn_training_data(idx: int, design_point: Dict, model_parame
     training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=1)
 
     for j, training_data in enumerate(training_data_list):
-        with open(os.path.join(DATA_DIR, f"{idx}_{j}.pickle"), 'wb') as f:
+        with open(os.path.join(data_dir, f"{idx}_{j}.pickle"), 'wb') as f:
             pkl.dump(training_data, f)
 
-def wrapper_generate_single_gnn_training_data(x):
+def wrapper_generate_single_gnn_train_data(x):
     idx, (design_point, model_parameters) = x
     try:
-        generate_single_gnn_training_data(idx, design_point, model_parameters)
+        generate_single_gnn_data(idx, design_point, model_parameters, data_dir=TRAIN_DATA_DIR)
     except KeyboardInterrupt:
         exit(1)
     except:
         logger.debug("Error in generating data")
 
-def generate_batch_gnn_training_data(idx_range=None, multiprocess=False):
-    if not os.path.exists(DATA_DIR):
-        os.mkdir(DATA_DIR)
+def wrapper_generate_single_gnn_test_data(x):
+    idx, (design_point, model_parameters) = x
+    try:
+        generate_single_gnn_data(idx, design_point, model_parameters, data_dir=TEST_DATA_DIR)
+    except KeyboardInterrupt:
+        exit(1)
+    except:
+        logger.debug("Error in generating data")
+
+def generate_batch_gnn_data(idx_range=None, multiprocess=False, training=True, num_worker=32):
+    if training:
+        seed = 0.42
+        data_dir = TRAIN_DATA_DIR
+        gen_func = wrapper_generate_single_gnn_train_data
     else:
-        for file in os.listdir(DATA_DIR):
-            os.remove(os.path.join(DATA_DIR, file))
+        seed = 0.84
+        data_dir = TEST_DATA_DIR
+        gen_func = wrapper_generate_single_gnn_test_data
+    for file in os.listdir(data_dir):
+        os.remove(os.path.join(data_dir, file))
 
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
         legal_points = pkl.load(f)
-    random.shuffle(legal_points, lambda : 0.42)  # fixed random seed
+    random.shuffle(legal_points, lambda : seed)  # fixed random seed
     if idx_range == None:
         idx_range = len(legal_points)
     if multiprocess:
-        with multiprocessing.Pool(64) as pool:
-            pool.map(wrapper_generate_single_gnn_training_data, enumerate(legal_points[:idx_range]))
+        with multiprocessing.Pool(num_worker) as pool:
+            pool.map(gen_func, enumerate(legal_points[:idx_range]))
     else:
         for x in enumerate(legal_points[:idx_range]):
-            wrapper_generate_single_gnn_training_data(x)
+            gen_func(x)
 
 def test_dataloader():
     dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
@@ -175,5 +197,6 @@ def test_dataloader():
         logger.debug(data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_training_data(idx_range=2000, multiprocess=True)
-    test_dataloader()
+    generate_batch_gnn_data(idx_range=2000, multiprocess=True, training=True)
+    generate_batch_gnn_data(idx_range=200, multiprocess=True, training=False)
+    # test_dataloader()
