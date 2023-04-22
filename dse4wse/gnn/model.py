@@ -143,7 +143,6 @@ class NoCeptionNet(nn.Module):
                  h_dim: int,
                  n_layer: int,
                  act_func: str = 'relu',
-                 use_norm: bool = True,
                  dropout: float = 0.2,
                  *args, 
                  **kwargs,
@@ -157,11 +156,13 @@ class NoCeptionNet(nn.Module):
         self.n_layer = n_layer
         self.mi_linears = []
         self.mo_linears = []
-        self.norms = []
+        self.node_norms = []
+        self.edge_norms = []
         for _ in range(n_layer):
             self.mi_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
             self.mo_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
-            self.norms.append(nn.LayerNorm(h_dim))
+            self.node_norms.append(nn.LayerNorm(h_dim))
+            self.edge_norms.append(nn.LayerNorm(h_dim))
 
         if act_func == "relu":
             self.act_func = nn.ReLU()
@@ -170,8 +171,6 @@ class NoCeptionNet(nn.Module):
         else:
             raise NotImplementedError
         
-        self.use_norm = use_norm
-
         self.drop = nn.Dropout(dropout)
         
         # self.gap = dglnn.GlobalAttentionPooling(nn.Linear(h_dim, 1), nn.Linear(h_dim, h_dim))
@@ -192,26 +191,31 @@ class NoCeptionNet(nn.Module):
         G_ = dgl.reverse(G, copy_ndata=True, copy_edata=True)
 
         for l in range(self.n_layer):
-            G.edata['ti'] = self.act_func(self.mi_linears[l](G.edata['h']).reshape(-1, self.h_dim // 2, self.h_dim))
-            G_.edata['to'] = self.act_func(self.mo_linears[l](G_.edata['h']).reshape(-1, self.h_dim // 2, self.h_dim))
+            G.ndata['h_'] = self.node_norms[l](G.ndata['h'])
+            G_.ndata['h_'] = self.node_norms[l](G_.ndata['h'])
+
+            edge_h = self.edge_norms[l](G.edata['h'])
+            ti = self.act_func(self.mi_linears[l](edge_h))
+            to = self.act_func(self.mo_linears[l](edge_h))
+            ti = self.drop(ti)
+            to = self.drop(to)
+            G.edata['ti'] = ti.reshape(-1, self.h_dim // 2, self.h_dim)
+            G_.edata['to'] = to.reshape(-1, self.h_dim // 2, self.h_dim)
             def mi_func(edges):
-                m = edges.data['ti'] @ edges.dst['h'].unsqueeze(-1)
+                m = edges.data['ti'] @ edges.dst['h_'].unsqueeze(-1)
                 m = m.squeeze(-1)
                 return {'m': m}
             def mo_func(edges):
-                m = edges.data['to'] @ edges.dst['h'].unsqueeze(-1)
+                m = edges.data['to'] @ edges.dst['h_'].unsqueeze(-1)
                 m = m.squeeze(-1)
                 return {'m': m}
             G.update_all(mi_func, fn.sum('m', 'mi'))
             G_.update_all(mo_func, fn.sum('m', 'mo'))
 
-            h = G.ndata['h']
+            node_h = G.ndata['h']
             m = torch.concat((G.ndata['mi'], G_.ndata['mo']), dim=-1)
-            if self.use_norm:
-                m = self.drop(self.norms[l](m))
-            else:
-                m = self.drop(m)
-            G.ndata['h'] = self.act_func(h + m)
+            m = self.drop(m)
+            G.ndata['h'] = self.act_func(node_h + m)
 
         gap_feat = self.gap(G, G.ndata['h']).squeeze(0)
         h0 = self.act_func(self.gap_linear(gap_feat))

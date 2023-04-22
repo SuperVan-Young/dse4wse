@@ -31,7 +31,7 @@ if not os.path.exists(CHECKPOINT_DIR):
     os.mkdir(CHECKPOINT_DIR)
 
 def train_model(model, dataset, batch_size=32):
-    NUM_EPOCH = 1
+    NUM_EPOCH = 50
     
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
