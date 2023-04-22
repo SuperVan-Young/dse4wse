@@ -28,7 +28,7 @@ def run_model():
 
 CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoint')
 
-def train_model(model, dataset):
+def train_model(model, dataset, batch_size=32):
     NUM_EPOCH = 50
     
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
@@ -39,19 +39,29 @@ def train_model(model, dataset):
 
     for epoch in range(NUM_EPOCH):
         total_loss = 0
+        i = 0
 
-        for data in tqdm(dataset):
+        tqdm_bar = tqdm(dataset)
+        for data in tqdm_bar:
+            i += 1
             logits = model(data['graph'], data['graph_feat'])
             # loss = F.mse_loss(logits, label)
             loss = F.smooth_l1_loss(logits, data['label'])
             loss.backward()
-            optimizer.step()
             total_loss += loss.item()
+            tqdm_bar.set_description(f"avg loss: {total_loss / i}")
+
+            if i % batch_size == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+                for param in model.parameters():
+                    param.grad /= batch_size
+                optimizer.step()
+                optimizer.zero_grad()
 
         lr_schduler.step()
 
         logger.info(f"Epoch {epoch}:")
-        logger.debug(f"learning rate: {lr_schduler.get_lr()}")
+        logger.debug(f"learning rate: {lr_schduler.get_last_lr()}")
         logger.debug(f"average loss: {total_loss / len(dataset)}")
 
     torch.save(model.state_dict(), checkpoint_path)
