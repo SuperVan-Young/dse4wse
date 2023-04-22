@@ -124,7 +124,7 @@ class WaferScaleEngine():
             core_buffer_size=int(core_config['core_sram_size'] / 1e3),
             core_buffer_bw=int(core_config['core_buffer_bandwidth'] / WSE_FREQUENCY),
             core_mac_num=int(core_config['core_compute_power'] / WSE_FREQUENCY),
-            core_noc_bw=int(reticle_config['inter_core_bandwidth'] / WSE_FREQUENCY),
+            core_noc_bw=int(reticle_config['inter_core_bandwidth'] * 8 / WSE_FREQUENCY),
             core_noc_vc=core_config['core_noc_vc'],
             core_noc_buffer_size=core_config['core_noc_buffer_size'],
             reticle_bw=1,  # doesn't matter ...
