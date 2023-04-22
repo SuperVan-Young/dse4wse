@@ -32,6 +32,7 @@ def train_model(model, dataset, batch_size=32):
     
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
+    logger.info(f"Model checkpoint path: {checkpoint_path}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     lr_schduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=3, threshold=1e-3)
@@ -60,8 +61,8 @@ def train_model(model, dataset, batch_size=32):
         lr_schduler.step(total_loss / len(dataset))
 
         logger.info(f"Epoch {epoch}:")
-        logger.debug(f"learning rate: {lr_schduler._last_lr}")
-        logger.debug(f"average loss: {total_loss / len(dataset)}")
+        logger.info(f"learning rate: {lr_schduler._last_lr}")
+        logger.info(f"average loss: {total_loss / len(dataset)}")
 
         torch.save(model.state_dict(), checkpoint_path)
 
@@ -82,8 +83,8 @@ def test_model(model, dataset):
     avg_mae = total_mae / len(dataset)
     avg_mape = total_mape / len(dataset)
 
-    logger.debug(f"Overall MAE: {avg_mae}")
-    logger.debug(f"Overall MAPE: {avg_mape}")
+    logger.info(f"Overall MAE: {avg_mae}")
+    logger.info(f"Overall MAPE: {avg_mape}")
 
 def main():
     model = get_model()

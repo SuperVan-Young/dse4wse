@@ -144,7 +144,9 @@ class NoCeptionNet(nn.Module):
                  n_layer: int,
                  act_func: str = 'elu',
                  dropout: float = 0.1,
-                 use_norm: bool = True,  # crutial
+                 use_norm: bool = True,  # crutial! the more the better hhh
+                 use_deeper_mlp_for_edge_func: bool = False,
+                 use_residual_connect: bool = False,
                  *args, 
                  **kwargs,
                  ) -> None:
@@ -154,30 +156,47 @@ class NoCeptionNet(nn.Module):
         self.node_inp_linear = nn.Linear(2, h_dim)
         self.edge_inp_linear = nn.Linear(1, h_dim)
 
-        self.n_layer = n_layer
-        self.mi_linears = []
-        self.mo_linears = []
-        self.node_norms = []
-        self.edge_norms = []
-        self.mi_convs = []
-        self.mo_convs = []
-        for i in range(n_layer):
-            self.mi_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
-            self.mo_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
-            self.node_norms.append(nn.LayerNorm(h_dim))
-            self.edge_norms.append(nn.LayerNorm(h_dim))
-            self.mi_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mi_linears[i](edge), aggregator_type='max'))
-            self.mo_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mo_linears[i](edge), aggregator_type='max'))
-
         if act_func == "relu":
             self.act_func = nn.ReLU()
         elif act_func == 'elu':
             self.act_func = nn.ELU()
         else:
             raise NotImplementedError
+
+        self.n_layer = n_layer
+        self.mi_linears = []
+        self.mo_linears = []
+        self.mi_convs = []
+        self.mo_convs = []
+
+        self.node_norms = []
+        self.edge_norms = []
+        self.message_norms = []
+        for i in range(n_layer):
+            if not use_deeper_mlp_for_edge_func:
+                self.mi_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
+                self.mo_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
+            else:
+                self.mi_linears.append(nn.Sequential(
+                    nn.Linear(h_dim, h_dim),
+                    self.act_func,
+                    nn.Linear(h_dim, h_dim ** 2 // 2),
+                ))
+                self.mo_linears.append(nn.Sequential(
+                    nn.Linear(h_dim, h_dim),
+                    self.act_func,
+                    nn.Linear(h_dim, h_dim ** 2 // 2),
+                ))
+            self.mi_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mi_linears[i](edge), aggregator_type='max'))
+            self.mo_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mo_linears[i](edge), aggregator_type='max'))
+
+            self.node_norms.append(nn.LayerNorm(h_dim))
+            self.edge_norms.append(nn.LayerNorm(h_dim))
+            self.message_norms.append(nn.LayerNorm(h_dim))
         
         self.use_norm = use_norm
         self.drop = nn.Dropout(dropout)
+        self.use_residual_connect = use_residual_connect
         
         self.readout = dglnn.MaxPooling()
         self.final_mlp = nn.Sequential(
@@ -199,8 +218,12 @@ class NoCeptionNet(nn.Module):
             mi = self.mi_convs[l](G, nfeat, efeat)
             mo = self.mo_convs[l](G_, nfeat, efeat)
             m = torch.concat([mi, mo], dim=-1)
-            G.ndata['h'] = self.act_func(nfeat + m)
-            # G.ndata['h'] = G.ndata['h'] + self.act_func(m)
+            if self.use_norm:
+                m = self.message_norms[l](m)
+            if self.use_residual_connect:
+                G.ndata['h'] = G.ndata['h'] + self.act_func(m)
+            else:
+                G.ndata['h'] = self.act_func(nfeat + m)
 
         readout = self.readout(G, G.ndata['h'])
         graph_feat = torch.concat([readout, graph_feat.unsqueeze(0)], dim=-1)
