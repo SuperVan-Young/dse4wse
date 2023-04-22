@@ -178,9 +178,10 @@ class NoCeptionNet(nn.Module):
         self.gap_linear = nn.Linear(h_dim, h_dim)
         self.graph_feat_linear = nn.Linear(1, h_dim)
         self.final_mlp = nn.Sequential(
-            nn.Linear(2 * h_dim, h_dim),
-            self.act_func,
-            nn.Linear(h_dim, 1),
+            nn.Linear(2 * h_dim, 1)
+            # nn.Linear(2 * h_dim, h_dim),
+            # self.act_func,
+            # nn.Linear(h_dim, 1),
         )
 
     def forward(self, G: dgl.graph, graph_feat):
@@ -209,8 +210,8 @@ class NoCeptionNet(nn.Module):
                 m = edges.data['to'] @ edges.dst['h_'].unsqueeze(-1)
                 m = m.squeeze(-1)
                 return {'m': m}
-            G.update_all(mi_func, fn.sum('m', 'mi'))
-            G_.update_all(mo_func, fn.sum('m', 'mo'))
+            G.update_all(mi_func, fn.max('m', 'mi'))
+            G_.update_all(mo_func, fn.max('m', 'mo'))
 
             node_h = G.ndata['h']
             m = torch.concat((G.ndata['mi'], G_.ndata['mo']), dim=-1)
@@ -218,6 +219,7 @@ class NoCeptionNet(nn.Module):
             G.ndata['h'] = self.act_func(node_h + m)
 
         gap_feat = self.gap(G, G.ndata['h']).squeeze(0)
+        gap_feat = self.drop(gap_feat)
         h0 = self.act_func(self.gap_linear(gap_feat))
         h1 = self.act_func(self.graph_feat_linear(graph_feat))
         h = torch.cat((h0, h1), dim=-1)

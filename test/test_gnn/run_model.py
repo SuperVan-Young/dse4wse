@@ -13,22 +13,19 @@ from dse4wse.gnn.dataloader import NoCeptionDataset
 from dse4wse.gnn.model import NoCeptionNet
 from dse4wse.utils import logger
 
+CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoint')
+if not os.path.exists(CHECKPOINT_DIR):
+    os.mkdir(CHECKPOINT_DIR)
+
 def get_dataset(training=True):
     dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'train' if training else 'test'))
     return dataset
 
-def get_model():
+def get_model(save_path=None):
     model = NoCeptionNet(h_dim=64, n_layer=2, act_func='elu')
+    if save_path:
+        model.load_state_dict(torch.load(save_path))
     return model
-
-def run_model():
-    test_data = get_dataset()[0]
-    model = get_model()
-    model(test_data)
-
-CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoint')
-if not os.path.exists(CHECKPOINT_DIR):
-    os.mkdir(CHECKPOINT_DIR)
 
 def train_model(model, dataset, batch_size=32):
     NUM_EPOCH = 50
@@ -36,7 +33,7 @@ def train_model(model, dataset, batch_size=32):
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     lr_schduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCH, eta_min=1e-5)
 
     for epoch in range(NUM_EPOCH):
@@ -85,6 +82,8 @@ def test_model(model, dataset):
 def main():
     model = get_model()
     train_model(model, get_dataset(training=True))
+
+    model.eval()
     test_model(model, get_dataset(training=True))
     test_model(model, get_dataset(training=False))
 
