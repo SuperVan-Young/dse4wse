@@ -167,4 +167,31 @@ def design_space_exploration():
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 
 if __name__ == "__main__":
-    design_space_exploration()
+    test_design_point = {
+        'core_array_h':8,
+        'core_array_w':16,
+        'core_buffer_bw':128,
+        'core_buffer_size':32,
+        'core_mac_num':16,
+        'core_noc_buffer_size':4,
+        'core_noc_bw':32,
+        'core_noc_vc':4,
+        'reticle_array_h':47,
+        'reticle_array_w':29,
+        'reticle_bw':0.75,
+        'wafer_mem_bw':900
+    }
+    test_model_parameters = {
+        "attention_heads": 32,
+        "hidden_size": 4096,
+        "sequence_length": 2048,
+        "number_of_layers": 36,
+        "mini_batch_size": 512,
+        "micro_batch_size": 256,
+        "data_parallel_size": 2,
+        "model_parallel_size": 1,
+        "tensor_parallel_size": 32,
+        'num_reticle_per_model_chunk':1363,
+        'weight_streaming':0
+    }
+    evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters, use_high_fidelity=True, metric='power')

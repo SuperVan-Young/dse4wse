@@ -66,6 +66,7 @@ class design_space_construction():
         # ])
         ret = []
         s = [set() for i in range(12)]
+        points_dic = []
 
         for core_buffer_size, core_mac_num in tqdm(product(self.parameter_list['Core']['buffer size'] + [48], self.parameter_list['Core']['MAC number'])):
             core_buffer_size = int(core_buffer_size)
@@ -122,7 +123,23 @@ class design_space_construction():
                                     reticle_array_h, 
                                     reticle_array_w
                                 ]
+
+                                point_dic = {
+                                    "core_buffer_size":core_buffer_size, 
+                                    "core_buffer_bw":core_buffer_bw, 
+                                    "core_mac_num":core_mac_num, 
+                                    "core_noc_bw":core_noc_bw, 
+                                    "core_noc_vc":core_noc_vc, 
+                                    "core_noc_buffer_size":core_noc_buffer_size, 
+                                    "reticle_bw":reticle_bw, 
+                                    "core_array_h":core_array_h, 
+                                    "core_array_w":core_array_w,
+                                    "wafer_mem_bw":wafer_mem_bw, 
+                                    "reticle_array_h":reticle_array_h, 
+                                    "reticle_array_w":reticle_array_w
+                                }
                                 ret.append(design_point)
+                                points_dic.append(point_dic)
                                 for i in range(len(design_point)):
                                     s[i].add(design_point[i])
                                 # print(design_point, file=f)
@@ -154,9 +171,12 @@ class design_space_construction():
         print("Total design point number: ", total_design_points)
         ret = np.array(ret)
         print('convert to npy files, saving files')
-        np.save('design_points.npy', ret, allow_pickle=True)
-        with open('design_space.pickle', 'wb') as f:
+        np.save('design_points3.npy', ret, allow_pickle=True)
+        with open('design_space3.pickle', 'wb') as f:
             pickle.dump(s, f)
+
+        with open('points_dic3.pickle', 'wb') as f:
+            pickle.dump(points_dic, f)
 
         # df.to_excel("design_points.xlsx", index=False)
 
