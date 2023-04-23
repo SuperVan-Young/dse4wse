@@ -8,8 +8,9 @@ from typing import Union, Dict, List
 import pickle as pkl
 import numpy as np
 import random
-import torch
+import traceback
 import multiprocessing
+from tqdm import tqdm
 
 from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner
 from dse4wse.utils import TrainingConfig, logger
@@ -36,14 +37,17 @@ class GnnDataGenTransformerRunner(ReticleFidelityWseTransformerRunner):
         wse_task = ListWaferTask(task_list)
         mapper = get_default_mapper(self.wafer_scale_engine, wse_task)
         wse_evaluator = LpReticleLevelWseEvaluator(self.wafer_scale_engine, wse_task, mapper)
-        
-        vrids = wse_task.get_all_virtual_reticle_ids()
-        if num_data > len(vrids): num_data = len(vrids)
-        random.shuffle(vrids)
+
         gnn_training_data_list = []
-        for i in range(num_data):
-            vrid = vrids[i]
+
+        target_vrids = wse_evaluator.find_hottest_link_task()
+        # logger.debug(f"#target_vrids = {len(target_vrids)}")
+        if num_data is None: num_data = len(target_vrids)
+        if num_data > len(target_vrids): num_data = len(target_vrids)
+        for vrid in target_vrids[:num_data]:
+            # if runtime error is raised, wrapper will handle it.
             gnn_training_data_list.append(wse_evaluator.dump_graph_v2(vrid))
+
         return gnn_training_data_list
     
 def create_wafer_scale_engine(
@@ -142,8 +146,8 @@ def generate_single_gnn_data(idx: int, design_point: Dict, model_parameters: Dic
 
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
     evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
-    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=1)
-    training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=1)
+    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=None)
+    training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=None)
 
     for j, training_data in enumerate(training_data_list):
         with open(os.path.join(data_dir, f"{idx}_{j}.pickle"), 'wb') as f:
@@ -156,6 +160,7 @@ def wrapper_generate_single_gnn_train_data(x):
     except KeyboardInterrupt:
         exit(1)
     except:
+        logger.debug(traceback.format_exc())
         logger.debug("Error in generating data")
 
 def wrapper_generate_single_gnn_test_data(x):
@@ -197,6 +202,6 @@ def test_dataloader():
         logger.debug(data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_data(idx_range=400, multiprocess=True, training=True)
-    generate_batch_gnn_data(idx_range=200, multiprocess=True, training=False)
+    generate_batch_gnn_data(idx_range=400, multiprocess=False, training=True)
+    generate_batch_gnn_data(idx_range=200, multiprocess=False, training=False)
     # test_dataloader()

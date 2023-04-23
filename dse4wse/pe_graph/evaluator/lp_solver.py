@@ -414,6 +414,20 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
 
         return data_dict, feat_dict, label_dict
     
+    def find_hottest_link_task(self):
+        """ Find hottest link's tasks' virtual reticle id.
+        This helps us find the effective data for GNN.
+
+        Of course, this doesn't include all of the hottest link,
+        but we only need to collect representative data of a graph.
+        """
+        G = self.__build_annotated_graph()
+        link_2_data_amount = [((u, v), sum(edata['transmission_mark'].values())) for u, v, edata in G.edges(data=True)]
+        sorted_links = sorted(link_2_data_amount, key=lambda item: item[1], reverse=True)  # descending order
+        hottest_link = sorted_links[0][0]
+        vrids = list(G.edges[hottest_link]['transmission_mark'].keys())
+        return vrids
+    
     def dump_graph_v2(self, virtual_reticle_id: int):
         """ dump reticle graph of a task.
 
@@ -482,6 +496,9 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         subtasks = [task for task in self.task if task.virtual_reticle_id == virtual_reticle_id]
         compute_amount = sum([task.compute_amount for task in subtasks if task.task_type == 'compute'])
         transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task.task_type == 'peer_access'])
+
+        dram_access_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access'])
+        dram_access_latency = dram_access_amount / self.hardware.dram_bandwidth
         
         num_total_flit = get_num_flit(transmission_amount)
         compute_latency = compute_amount / self.hardware.reticle_compute_power
@@ -513,6 +530,17 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         if num_flit_per_service > 50:
             logger.debug(self.task)
 
+        transmission_latency = num_flit_per_service * num_total_flit / 1e9
+        gnn_total_latency = max(transmission_latency, compute_latency, dram_access_latency)
+        ground_truth_total_latency = 1 / min_freq
+        ape = (gnn_total_latency - ground_truth_total_latency) / ground_truth_total_latency
+        if np.abs(ape) > 0.01:
+            # logger.debug("Check consistency of reconstruction")
+            # logger.debug(f"gnn_total_latency :{gnn_total_latency}")
+            # logger.debug(f"ground_truth_total_latency :{ground_truth_total_latency}")
+            # self.profile_utilization()
+            raise RuntimeError("You didn't find the hottest spot!")
+
         return {
             "edge_srcs": edge_srcs, 
             "edge_dsts": edge_dsts, 
@@ -530,13 +558,10 @@ class GnnReticleLevelWseEvaluator(LpReticleLevelWseEvaluator):
         self.gnn_model = gnn_model
 
     def get_total_latency(self) -> float:
-        # randomly choose several virtual reticle id
-        vrids = [vrid for vrid in self.vrid_2_var]
-        random.shuffle(vrids)
-        num_test_vrid = min(10, len(vrids))
+        target_vrids = self.find_hottest_link_task()
 
         total_latency = 0
-        for vrid in vrids[:num_test_vrid]:
+        for vrid in target_vrids[:1]:
             gnn_data = self.dump_graph_v2(vrid)
             pred = self.gnn_model(gnn_data['graph'], gnn_data['graph_feat'])
             transmission_latency = pred * gnn_data['num_total_flit']
