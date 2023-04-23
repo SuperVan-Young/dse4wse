@@ -44,7 +44,7 @@ def train_model(model, dataset, batch_size=32):
         tqdm_bar = tqdm(dataset)
         for data in tqdm_bar:
             i += 1
-            logits = model(data['graph'], data['graph_feat'])
+            logits = model(data['graph'])
             # loss = F.mse_loss(logits, label)
             loss = F.smooth_l1_loss(logits, data['label'])
             loss.backward()
@@ -72,7 +72,7 @@ def test_model(model, dataset):
 
     with torch.no_grad():
         for data in tqdm(dataset):
-            logits = model(data['graph'], data['graph_feat'])
+            logits = model(data['graph'])
             label = data['label']
             mae = torch.abs(logits - label).mean()
             mape = mae / label

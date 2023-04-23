@@ -147,7 +147,7 @@ class NoCeptionNet(nn.Module):
                  use_norm: bool = True,  # crutial! the more the better hhh
                  use_deeper_mlp_for_edge_func: bool = False,
                  use_residual_connect: bool = False,
-                 pooling: str = 'set2set',
+                 pooling: str = 'max',
                  *args, 
                  **kwargs,
                  ) -> None:
@@ -164,8 +164,8 @@ class NoCeptionNet(nn.Module):
 
         self.h_dim = h_dim
         assert h_dim % 2 == 0
-        self.node_inp_linear = nn.Linear(2, h_dim)
-        self.edge_inp_linear = nn.Linear(1, h_dim)
+        self.node_inp_linear = nn.Linear(13, h_dim)
+        self.edge_inp_linear = nn.Linear(13, h_dim)
 
         if act_func == "relu":
             self.act_func = nn.ReLU()
@@ -216,12 +216,12 @@ class NoCeptionNet(nn.Module):
         else:
             raise NotImplementedError
         self.final_mlp = nn.Sequential(
-            nn.Linear(2 * h_dim + 1, 4 * h_dim) if pooling == 'set2set' else nn.Linear(h_dim + 1, 4 * h_dim),
+            nn.Linear(2 * h_dim, 4 * h_dim) if pooling == 'set2set' else nn.Linear(h_dim, 4 * h_dim),
             self.act_func,
             nn.Linear(4 * h_dim, 1),
         )
 
-    def forward(self, G: dgl.graph, graph_feat):
+    def forward(self, G: dgl.graph):
         # convert input to hidden
         G.ndata['h'] = self.act_func(self.node_inp_linear(G.ndata['inp']))
         G.edata['h'] = self.act_func(self.edge_inp_linear(G.edata['inp']))
@@ -241,8 +241,7 @@ class NoCeptionNet(nn.Module):
             else:
                 G.ndata['h'] = self.act_func(nfeat + m)
 
-        readout = self.pooling(G, G.ndata['h'])
-        graph_feat = torch.concat([readout, graph_feat.unsqueeze(0)], dim=-1)
+        graph_feat = self.pooling(G, G.ndata['h'])
         pred = self.final_mlp(graph_feat)
         return pred
         
