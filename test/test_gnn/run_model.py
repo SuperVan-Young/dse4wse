@@ -21,22 +21,23 @@ def get_dataset(training=True):
     dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'train' if training else 'test'))
     return dataset
 
-def get_model(save_path=None):
-    model = NoCeptionNet(h_dim=64, n_layer=2, act_func='elu')
+def get_model(gnn_params, save_path=None):
+    model = NoCeptionNet(**gnn_params)
     if save_path:
         checkpoint = torch.load(save_path)
         model.load_state_dict(checkpoint['model_state_dict'])
     return model
 
-def train_model(model, dataset, batch_size=32):
-    NUM_EPOCH = 100
+def train_model(model, dataset, batch_size=8):
+    NUM_EPOCH = 150
+    model.train()
     
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
     logger.info(f"Model checkpoint path: {checkpoint_path}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    lr_schduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=3, threshold=1e-3)
+    lr_schduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=7, threshold=1e-3)
 
     for epoch in range(NUM_EPOCH):
         total_loss = 0
@@ -65,7 +66,7 @@ def train_model(model, dataset, batch_size=32):
         logger.info(f"learning rate: {lr_schduler._last_lr}")
         logger.info(f"average loss: {total_loss / len(dataset)}")
 
-        if epoch % 5 == 0:
+        if (epoch + 1) % 5 == 0:
             model.eval()
             test_model(model, get_dataset(training=True))
             test_model(model, get_dataset(training=False))
@@ -97,10 +98,10 @@ def test_model(model, dataset):
     logger.info(f"Overall MAE: {avg_mae}")
     logger.info(f"Overall MAPE: {avg_mape}")
 
-def main():
-    model = get_model()
+def run(gnn_params=None):
+    model = get_model(gnn_params)
     # model = get_model(os.path.join(CHECKPOINT_DIR, "model_2023-04-22-15-00-11-015813.pth"))
     train_model(model, get_dataset(training=True))
 
 if __name__ == "__main__":
-    main()
+    run()

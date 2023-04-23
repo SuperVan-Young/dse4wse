@@ -149,9 +149,9 @@ class FeatureGen(nn.Module):
         self.inp_lin = nn.Linear(in_feat, out_feat)
         self.act_func = act_func
         self.mlp = nn.Sequential(
-            nn.Module(out_feat, out_feat),
+            nn.Linear(out_feat, out_feat),
             act_func,
-            nn.Module(out_feat, out_feat),
+            nn.Linear(out_feat, out_feat),
         )
         self.norm = nn.LayerNorm(out_feat)
         self.drop = nn.Dropout(dropout)
@@ -166,10 +166,10 @@ class FeatureGen(nn.Module):
     
 class NoCeptionNet(nn.Module):
     def __init__(self,
-                 h_dim: int,
-                 n_layer: int,
+                 h_dim: int = 64,
+                 n_layer: int = 2,
                  act_func: str = 'elu',
-                 dropout: float = 0.1,
+                 dropout: float = 0.0,
                  use_norm: bool = True,  # crutial! the more the better hhh
                  use_deeper_mlp_for_inp: bool = False,
                  use_deeper_mlp_for_edge_func: bool = False,
