@@ -446,6 +446,13 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         G = self.__build_annotated_graph()
         min_freq = self.__lp_solver(G)
 
+        WSE_FREQUENCY = 1e9
+
+        def get_num_flit(data_amount):
+            flit_size = self.hardware.inter_reticle_bandwidth / WSE_FREQUENCY  # byte
+            num_flit = math.ceil(data_amount / flit_size) + 1
+            return num_flit
+
         # find all relevant nodes and build a subgraph
         target_nodes = {u for u, v, edata in G.edges(data=True) if virtual_reticle_id in edata['transmission_mark']}
         target_neighbors = reduce(lambda x, y: x | y, [set(G.neighbors(u)) for u in target_nodes], set())
@@ -466,45 +473,27 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         edge_srcs = [node_2_alias[u] for u, v in g.edges()]
         edge_dsts = [node_2_alias[v] for u, v in g.edges()]
 
-        # build node feats
-        node_feats = []
-        for n, ndata in g.nodes(data=True):
-            onehot = [1, 0] if virtual_reticle_id in ndata['compute_mark'] else [0, 1]
-            feat = np.array(onehot)
-            node_feats.append(feat)
-        node_feats = np.stack(node_feats, axis=0, dtype='float')
-        
-        WSE_FREQUENCY = 1e9
-        def get_num_flit(data_amount):
-            flit_size = self.hardware.inter_reticle_bandwidth / WSE_FREQUENCY  # byte
-            num_flit = math.ceil(data_amount / flit_size) + 1
-            return num_flit
+        # rebuild info, we only consider link with maximum transmission amount
+        subtasks = [task for task in self.task if task.virtual_reticle_id == virtual_reticle_id]
+        compute_amount = sum([task.compute_amount for task in subtasks if task.task_type == 'compute'])
+        dram_access_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access'])
+        transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task.task_type == 'peer_access'])
 
-        # build edge feats
-        edge_feats = []
-        for u, v, edata in g.edges(data=True):
-            num_flow = len(edata['transmission_mark'])
-            feat = np.array([num_flow])
-            edge_feats.append(feat)
-        edge_feats = np.stack(edge_feats, axis=0, dtype='float')
+        if transmission_amount < 1:
+            raise RuntimeError("There's no transmission in this training data!")
+
+        num_total_flit = get_num_flit(transmission_amount)
+
+        compute_latency = compute_amount / self.hardware.reticle_compute_power
+        dram_access_latency = dram_access_amount / self.hardware.dram_bandwidth
+        ideal_transmission_latency = transmission_amount / self.hardware.inter_reticle_bandwidth
+
+        # we'll fuse these graph-level features into every node feat
+        compute_transmission_ratio =  np.log(compute_latency / ideal_transmission_latency)
 
         # build graph level regression target
         inter_reticle_bandwidth = self.hardware.inter_reticle_bandwidth
         num_flit_per_service = 0
-
-        # rebuild info, we only consider link with maximum transmission amount
-        subtasks = [task for task in self.task if task.virtual_reticle_id == virtual_reticle_id]
-        compute_amount = sum([task.compute_amount for task in subtasks if task.task_type == 'compute'])
-        transmission_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access' or task.task_type == 'peer_access'])
-
-        dram_access_amount = sum([task.data_amount for task in subtasks if task.task_type == 'dram_access'])
-        dram_access_latency = dram_access_amount / self.hardware.dram_bandwidth
-        
-        num_total_flit = get_num_flit(transmission_amount)
-        compute_latency = compute_amount / self.hardware.reticle_compute_power
-        ideal_transmission_latency = transmission_amount / self.hardware.inter_reticle_bandwidth
-
-        compute_transmission_ratio =  np.log(compute_amount / ideal_transmission_latency)
 
         for u, v, edata in g.edges(data=True):
             if not virtual_reticle_id in edata['transmission_mark']:
@@ -530,6 +519,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         if num_flit_per_service > 50:
             logger.debug(self.task)
 
+        # The following code test whether we can rebuild total latency
         transmission_latency = num_flit_per_service * num_total_flit / 1e9
         gnn_total_latency = max(transmission_latency, compute_latency, dram_access_latency)
         ground_truth_total_latency = 1 / min_freq
@@ -541,15 +531,48 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
             # self.profile_utilization()
             raise RuntimeError("You didn't find the hottest spot!")
 
+        # build node feats
+        node_feats = []
+        core_compute_power = self.hardware.reticle_config['core_config']['core_compute_power'] / WSE_FREQUENCY
+        core_array_height = self.hardware.reticle_config['core_array_height']
+        core_array_width = self.hardware.reticle_config['core_array_width']
+        core_array_size = core_array_height * core_array_width
+        core_compute_power = np.eye(7, dtype='float')[int(np.log2(core_compute_power / 4))]
+
+        for n, ndata in g.nodes(data=True):
+            is_compute_reticle = [1, 0] if virtual_reticle_id in ndata['compute_mark'] else [0, 1]
+            is_compute_reticle = np.array(is_compute_reticle, dtype='float')
+            reticle_config = np.array([core_array_height, core_array_width, core_array_size], dtype='float')
+            ratios = np.array([compute_transmission_ratio], dtype='float')
+            feat = np.concatenate([is_compute_reticle, core_compute_power, reticle_config, ratios], axis=-1)
+            node_feats.append(feat)
+        node_feats = np.stack(node_feats, axis=0, dtype='float')
+        
+        # build edge feats
+        edge_feats = []
+        core_noc_bw = self.hardware.reticle_config['inter_core_bandwidth'] / WSE_FREQUENCY * 8
+        inter_reticle_bw = self.hardware.inter_reticle_bandwidth / self.hardware.reticle_config['inter_core_bandwidth']
+
+        # number of classes should follow design_space.json's specification
+        # for convenience, we hardcode available values
+        core_noc_bw = np.eye(8)[int(np.log2(core_noc_bw / 32))]
+        inter_reticle_bw = np.eye(4)[int(inter_reticle_bw * 4) - 1]
+
+        for u, v, edata in g.edges(data=True):
+            num_flow = np.array([len(edata['transmission_mark'])], dtype='float')
+            feat = np.concatenate([num_flow, core_noc_bw, inter_reticle_bw], axis=-1)
+            edge_feats.append(feat)
+        edge_feats = np.stack(edge_feats, axis=0, dtype='float')
+
         return {
             "edge_srcs": edge_srcs, 
             "edge_dsts": edge_dsts, 
             "node_feats": node_feats, 
             "edge_feats": edge_feats, 
-            "graph_feat": compute_transmission_ratio,
             "label": num_flit_per_service, 
             "num_total_flit": num_total_flit,
             "compute_latency": compute_latency,
+            "dram_access_latency": dram_access_latency,
         }
         
 class GnnReticleLevelWseEvaluator(LpReticleLevelWseEvaluator):
@@ -565,7 +588,7 @@ class GnnReticleLevelWseEvaluator(LpReticleLevelWseEvaluator):
             gnn_data = self.dump_graph_v2(vrid)
             pred = self.gnn_model(gnn_data['graph'], gnn_data['graph_feat'])
             transmission_latency = pred * gnn_data['num_total_flit']
-            total_latency_ = max(transmission_latency, gnn_data['compute_latency'])
+            total_latency_ = max(transmission_latency, gnn_data['compute_latency'], gnn_data['dram_access_latency'])
             total_latency = max(total_latency_, total_latency)
 
         return total_latency

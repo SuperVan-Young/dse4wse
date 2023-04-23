@@ -146,8 +146,8 @@ def generate_single_gnn_data(idx: int, design_point: Dict, model_parameters: Dic
 
     wafer_scale_engine = create_wafer_scale_engine(**design_point)
     evaluator = create_evaluator(wafer_scale_engine, **model_parameters)
-    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=None)
-    training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=None)
+    training_data_list = evaluator.get_gnn_training_data(inference=False, num_data=1)
+    training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=1)
 
     for j, training_data in enumerate(training_data_list):
         with open(os.path.join(data_dir, f"{idx}_{j}.pickle"), 'wb') as f:
@@ -170,6 +170,7 @@ def wrapper_generate_single_gnn_test_data(x):
     except KeyboardInterrupt:
         exit(1)
     except:
+        logger.debug(traceback.format_exc())
         logger.debug("Error in generating data")
 
 def generate_batch_gnn_data(idx_range=None, multiprocess=False, training=True, num_worker=32):
@@ -202,6 +203,6 @@ def test_dataloader():
         logger.debug(data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_data(idx_range=400, multiprocess=False, training=True)
-    generate_batch_gnn_data(idx_range=200, multiprocess=False, training=False)
+    generate_batch_gnn_data(idx_range=400, multiprocess=True, training=True)
+    generate_batch_gnn_data(idx_range=200, multiprocess=True, training=False)
     # test_dataloader()
