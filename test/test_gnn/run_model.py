@@ -24,11 +24,12 @@ def get_dataset(training=True):
 def get_model(save_path=None):
     model = NoCeptionNet(h_dim=64, n_layer=2, act_func='elu')
     if save_path:
-        model.load_state_dict(torch.load(save_path))
+        checkpoint = torch.load(save_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
     return model
 
 def train_model(model, dataset, batch_size=32):
-    NUM_EPOCH = 50
+    NUM_EPOCH = 100
     
     timestamp = datetime.now().strftime('%Y-%m-%d-%H-%M-%S-%f')
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"model_{timestamp}.pth")
@@ -53,7 +54,7 @@ def train_model(model, dataset, batch_size=32):
 
             if i % batch_size == 0:
                 # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
-                for param in model.parameters():
+                for name, param in model.named_parameters():
                     param.grad /= batch_size
                 optimizer.step()
                 optimizer.zero_grad()
@@ -64,7 +65,17 @@ def train_model(model, dataset, batch_size=32):
         logger.info(f"learning rate: {lr_schduler._last_lr}")
         logger.info(f"average loss: {total_loss / len(dataset)}")
 
-        torch.save(model.state_dict(), checkpoint_path)
+        if epoch % 5 == 0:
+            model.eval()
+            test_model(model, get_dataset(training=True))
+            test_model(model, get_dataset(training=False))
+            checkpoint = {
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'epoch': epoch,
+            }
+            torch.save(checkpoint, checkpoint_path)
+            model.train()
 
 def test_model(model, dataset):
     total_mae = 0
@@ -90,10 +101,6 @@ def main():
     model = get_model()
     # model = get_model(os.path.join(CHECKPOINT_DIR, "model_2023-04-22-15-00-11-015813.pth"))
     train_model(model, get_dataset(training=True))
-
-    model.eval()
-    test_model(model, get_dataset(training=True))
-    test_model(model, get_dataset(training=False))
 
 if __name__ == "__main__":
     main()

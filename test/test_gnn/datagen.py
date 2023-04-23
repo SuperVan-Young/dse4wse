@@ -198,11 +198,11 @@ def generate_batch_gnn_data(idx_range=None, multiprocess=False, training=True, n
             gen_func(x)
 
 def test_dataloader():
-    dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'))
+    dataset = NoCeptionDataset(save_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'train'))
     for data in dataset:
         logger.debug(data)
 
 if __name__ == "__main__":
     generate_batch_gnn_data(idx_range=400, multiprocess=True, training=True)
     generate_batch_gnn_data(idx_range=200, multiprocess=True, training=False)
-    # test_dataloader()
+    test_dataloader()
