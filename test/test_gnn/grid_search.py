@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import argparse
-from .run_model import run
+from run_model import run
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--param', metavar='N', type=int)

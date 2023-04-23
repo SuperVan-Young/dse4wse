@@ -98,7 +98,7 @@ def test_model(model, dataset):
     logger.info(f"Overall MAE: {avg_mae}")
     logger.info(f"Overall MAPE: {avg_mape}")
 
-def run(gnn_params=None):
+def run(gnn_params={}):
     model = get_model(gnn_params)
     # model = get_model(os.path.join(CHECKPOINT_DIR, "model_2023-04-22-15-00-11-015813.pth"))
     train_model(model, get_dataset(training=True))

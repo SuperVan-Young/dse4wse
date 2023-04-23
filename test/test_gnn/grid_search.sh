@@ -1,2 +1,4 @@
-for i in [0..9]:
-    python run_model.py --param $i
+for i in {0..8}
+do
+  python grid_search.py --param $i
+done
