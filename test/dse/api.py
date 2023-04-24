@@ -7,6 +7,11 @@ import traceback
 import numpy as np
 from typing import Dict
 import random
+import torch
+import pickle as pkl
+from typing import Tuple
+import multiprocessing as mp
+from tqdm import tqdm
 
 # make sure dse4wse filefolder is in your PATH
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -15,8 +20,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from dse4wse.model.wse_attn import WseTransformerRunner
 from dse4wse.model.wse_attn import ReticleFidelityWseTransformerRunner
+from dse4wse.model.wse_attn import GnnReticleFidelityWseTransformerRunner
 from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.utils import logger, TrainingConfig
+from dse4wse.gnn.model import NoCeptionNet
+from dse4wse.gnn.dataloader import NoCeptionDataset
 
 def create_wafer_scale_engine(
     core_buffer_size: int,
@@ -104,6 +112,41 @@ def create_evaluator(
 
     return wse_transformer_runner
 
+def create_gnn_evaluator(
+    gnn_model,
+    wafer_scale_engine: WaferScaleEngine,
+    attention_heads: int,
+    hidden_size: int,
+    sequence_length: int,
+    number_of_layers: int,
+    mini_batch_size: int,
+    micro_batch_size: int = 1,
+    data_parallel_size: int = 1,
+    model_parallel_size: int = 1,
+    tensor_parallel_size: int = 1,
+    **kwargs,
+):
+    default_training_config = TrainingConfig()
+    default_inter_wafer_bandwidth = None
+
+    wse_transformer_runner = GnnReticleFidelityWseTransformerRunner(
+        attention_heads=attention_heads,
+        hidden_size=hidden_size,
+        sequence_length=sequence_length,
+        number_of_layers=number_of_layers,
+        mini_batch_size=mini_batch_size,
+        micro_batch_size=micro_batch_size,
+        data_parallel_size=data_parallel_size,
+        model_parallel_size=model_parallel_size,
+        tensor_parallel_size=tensor_parallel_size,
+        wafer_scale_engine=wafer_scale_engine,
+        training_config=default_training_config,
+        inter_wafer_bandwidth=default_inter_wafer_bandwidth,
+        gnn_model=gnn_model,
+    )
+    return wse_transformer_runner
+
+
 def nohup_decorator(func):
     def wrapper(*args, **kwargs):
         try:
@@ -162,5 +205,92 @@ def design_space_exploration():
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 
+def test_fidelity_accuracy(fidelity='naive'):
+    """ test the accuracy of naive & GNN fidelity against LP solver
+    """
+    logger.info(f"Testing fidelity {fidelity}'s accuracy against LP solver")
+
+    # build a list of design point and model parameters
+    legal_points = []
+    design_point_source = 'gnn_train_data'
+    logger.info(f"design point source: {design_point_source}")
+
+    if design_point_source in ['gnn_train_data', 'gnn_test_data']:
+        suffix = 'train' if design_point_source == 'gnn_train_data' else 'test'
+        save_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'test_gnn', 'data', suffix)
+        dataset = NoCeptionDataset(save_dir=save_dir)
+        legal_points = [(data['design_point'], data['model_parameters']) for data in dataset]
+    elif design_point_source == 'random':
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
+            legal_points = pkl.load(f)
+        random.shuffle(legal_points, lambda : 0.73)  # different seed from building dataset
+        legal_points = legal_points[:500]  # restrict number of design points
+    else:
+        raise NotImplementedError
+
+    # preload pretrained gnn model for better efficiency. For now we hardcode the best one we get
+    best_model_param = {
+        'h_dim': 128,
+        'n_layer': 3,
+        'use_deeper_mlp_for_inp': True,
+        'use_deeper_mlp_for_edge_func': True,
+        'pooling': 'set2set',
+    }
+    gnn_model = NoCeptionNet(**best_model_param)
+
+    checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_gnn', 'checkpoint', "model_2023-04-24-05-40-30-946075.pth")
+    checkpoint = torch.load(checkpoint_path)
+    gnn_model.load_state_dict(checkpoint['model_state_dict'])
+
+    # now let's test some transformer runner!
+    baseline_results = []
+    test_results = []
+
+    def worker(design_point, model_parameters) -> Tuple[int, int]:
+        wafer_scale_engine = create_wafer_scale_engine(**design_point)
+        baseline_evaluator = create_evaluator(True, wafer_scale_engine, **model_parameters)
+
+        test_evaluator = None
+        if fidelity == 'naive':
+            test_evaluator = create_evaluator(False, wafer_scale_engine, **model_parameters)
+        elif fidelity == 'gnn':
+            test_evaluator = create_gnn_evaluator(gnn_model, wafer_scale_engine, **model_parameters)
+        else:
+            raise NotImplementedError
+
+        # TODO: more metrics
+        baseline_result = baseline_evaluator.get_training_throughput()
+        test_result = test_evaluator.get_training_throughput()
+
+        return (baseline_result, test_result)
+
+    def get_mae():
+        baseline_results_ = np.array(baseline_results)
+        test_results_ = np.array(test_results)
+        mae = np.abs(baseline_results_ - test_results_)
+        mae = np.mean(mae)
+        return mae
+    
+    def get_mape():
+        baseline_results_ = np.array(baseline_results)
+        test_results_ = np.array(test_results)
+        mape = np.abs((baseline_results_ - test_results_) / baseline_results_)
+        mape = np.mean(mape)
+        return mape
+    
+    tqdm_bar = tqdm(legal_points)
+    for design_point, model_parameters in tqdm_bar:
+        result = worker(design_point, model_parameters)
+        baseline_results.append(result[0])
+        test_results.append(result[1])
+        tqdm_bar.set_description(f"MAPE = {get_mape():.4%}")
+
+    # analyze the result
+    logger.info(f"MAE = {get_mae()}")
+    logger.info(f"MAPE = {get_mape()}")
+
+
 if __name__ == "__main__":
-    design_space_exploration()
+    # design_space_exploration()
+    test_fidelity_accuracy(fidelity='gnn')
+    # test_fidelity_accuracy(fidelity='naive')

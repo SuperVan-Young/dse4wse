@@ -6,6 +6,7 @@ from functools import reduce
 import networkx as nx
 import numpy as np
 from copy import deepcopy
+import torch.nn as nn
 
 from dse4wse.op_graph.graph import OpGraph, build_op_graph_from_operator_list
 from dse4wse.op_graph.op import BaseOperator, MatMulOperator
@@ -576,7 +577,11 @@ class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
         self.parallel_index_2_virtual_reticle_id = {(m, t, r): i for i, (m, t, r) in enumerate(product(range(self.num_pipeline_stage_per_wafer), range(tensor_parallel_size), range(self.num_reticle_per_model_chunk)))}
         self.is_overlap = True  # if ture, we overlap compute with inter reticle communication
         self.__virtual_dram_port_counter = 0
-        self.wse_evaluator_class = LpReticleLevelWseEvaluator
+        # self.wse_evaluator_class = LpReticleLevelWseEvaluator
+
+    @property
+    def wse_evaluator_class(self):
+        return LpReticleLevelWseEvaluator
     
     def __alloc_new_dram_port(self):
         vdp = deepcopy(self.__virtual_dram_port_counter)
@@ -856,14 +861,13 @@ class GnnReticleFidelityWseTransformerRunner(ReticleFidelityWseTransformerRunner
                  zero_dp_g: bool = True, 
                  zero_dp_p: bool = False, 
                  zero_r_pa: bool = True, 
-                 gnn_model_path: str = None,
+                 gnn_model: nn.Module = None,
                  **kwargs) -> None:
         super().__init__(attention_heads, hidden_size, sequence_length, number_of_layers, micro_batch_size, mini_batch_size, data_parallel_size, model_parallel_size, tensor_parallel_size, wafer_scale_engine, training_config, inter_wafer_bandwidth, zero_dp_os, zero_dp_g, zero_dp_p, zero_r_pa, **kwargs)
-        self.gnn_model_path = gnn_model_path
+        self.gnn_model = gnn_model
 
     @property
     def wse_evaluator_class(self):
-        gnn_model = torch.load(self.gnn_model_path)
         def __inner_func(hardware, task, mapper):
-            return GnnReticleFidelityWseTransformerRunner(hardware, task, mapper, gnn_model)
+            return GnnReticleLevelWseEvaluator(hardware, task, mapper, self.gnn_model)
         return __inner_func

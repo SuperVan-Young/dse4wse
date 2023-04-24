@@ -526,10 +526,10 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         ground_truth_total_latency = 1 / min_freq
         ape = (gnn_total_latency - ground_truth_total_latency) / ground_truth_total_latency
         if np.abs(ape) > 0.01:
-            # logger.debug("Check consistency of reconstruction")
-            # logger.debug(f"gnn_total_latency :{gnn_total_latency}")
-            # logger.debug(f"ground_truth_total_latency :{ground_truth_total_latency}")
-            # self.profile_utilization()
+            logger.debug("Check consistency of reconstruction")
+            logger.debug(f"gnn_total_latency :{gnn_total_latency}")
+            logger.debug(f"ground_truth_total_latency :{ground_truth_total_latency}")
+            self.profile_utilization()
             raise RuntimeError("You didn't find the hottest spot!")
 
         # build node feats
@@ -587,10 +587,19 @@ class GnnReticleLevelWseEvaluator(LpReticleLevelWseEvaluator):
         total_latency = 0
         for vrid in target_vrids[:1]:
             gnn_data = self.dump_graph_v2(vrid)
+            gnn_data['design_point'] = None  # pad these fields which are useless here
+            gnn_data['model_parameters'] = None
             gnn_data = process_noception_gnn_data(gnn_data)
-            pred = self.gnn_model(gnn_data['graph'], gnn_data['graph_feat'])
-            transmission_latency = pred * gnn_data['num_total_flit']
+            pred = self.gnn_model(gnn_data['graph']).item()
+            label = gnn_data['label'].item()
+
+            logger.debug(f"pred-label percetage error: {np.abs(pred - label) / label:.2%}")
+
+            transmission_latency = pred * gnn_data['num_total_flit'] / 1e9
             total_latency_ = max(transmission_latency, gnn_data['compute_latency'], gnn_data['dram_access_latency'])
             total_latency = max(total_latency_, total_latency)
+
+        repeated_times = max([reticle_task.repeated_times for reticle_task in self.task])  # times
+        total_latency *= repeated_times
 
         return total_latency

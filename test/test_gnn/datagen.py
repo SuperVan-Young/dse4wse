@@ -150,6 +150,9 @@ def generate_single_gnn_data(idx: int, design_point: Dict, model_parameters: Dic
     training_data_list += evaluator.get_gnn_training_data(inference=True, num_data=1)
 
     for j, training_data in enumerate(training_data_list):
+        # fuse dp and mp into training data
+        training_data['design_point'] = design_point
+        training_data['model_parameters'] = model_parameters
         with open(os.path.join(data_dir, f"{idx}_{j}.pickle"), 'wb') as f:
             pkl.dump(training_data, f)
 
