@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from datetime import datetime
+import numpy as np
 
 from dse4wse.gnn.dataloader import NoCeptionDataset
 from dse4wse.gnn.model import NoCeptionNet
@@ -26,6 +27,10 @@ def get_model(gnn_params, save_path=None):
     if save_path:
         checkpoint = torch.load(save_path)
         model.load_state_dict(checkpoint['model_state_dict'])
+    # logger.debug(checkpoint['model_state_dict'])
+    # for name, param in model.named_parameters():
+    #     logger.debug(name)
+    #     logger.debug(param)
     return model
 
 def train_model(model, dataset, batch_size=8):
@@ -75,33 +80,47 @@ def train_model(model, dataset, batch_size=8):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'epoch': epoch,
             }
-            torch.save(checkpoint, checkpoint_path)
             model.train()
+            torch.save(checkpoint, checkpoint_path)
 
 def test_model(model, dataset):
-    total_mae = 0
-    total_mape = 0
+    total_mae = []
+    total_mape = []
 
     with torch.no_grad():
         for data in tqdm(dataset):
             logits = model(data['graph'])
             label = data['label']
-            mae = torch.abs(logits - label).mean()
+            mae = torch.abs(logits - label)
             mape = mae / label
-            total_mae += mae.item()
-            total_mape += mape.item()
+            total_mae.append(mae.item())
+            total_mape.append(mape.item())
             # logger.debug(f"MAE: {mae}")
     
-    avg_mae = total_mae / len(dataset)
-    avg_mape = total_mape / len(dataset)
+    avg_mae = np.mean(total_mae)
+    avg_mape = np.mean(total_mape)
 
     logger.info(f"Overall MAE: {avg_mae}")
     logger.info(f"Overall MAPE: {avg_mape}")
 
 def run(gnn_params={}):
     model = get_model(gnn_params)
-    # model = get_model(os.path.join(CHECKPOINT_DIR, "model_2023-04-22-15-00-11-015813.pth"))
-    train_model(model, get_dataset(training=True))
+
+    # gnn_params = {
+    #     'h_dim': 128,
+    #     'n_layer': 3,
+    #     'use_deeper_mlp_for_inp': True,
+    #     'use_deeper_mlp_for_edge_func': True,
+    #     'pooling': 'set2set',
+    # }
+    # model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-24-05-40-30-946075.pth"))
+    model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-24-11-36-25-542607.pth"))
+
+    # train_model(model, get_dataset(training=True))
+
+    model.eval()
+    test_model(model, get_dataset(training=True))
+    test_model(model, get_dataset(training=False))
 
 if __name__ == "__main__":
     run()
