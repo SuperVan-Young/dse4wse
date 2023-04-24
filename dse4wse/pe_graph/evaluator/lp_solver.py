@@ -21,6 +21,7 @@ from dse4wse.pe_graph.hardware import WaferScaleEngine
 from dse4wse.pe_graph.task import BaseReticleTask, ListWaferTask, ComputeReticleTask, DramAccessReticleTask, PeerAccessReticleTask, FusedReticleTask
 from dse4wse.pe_graph.mapper import WseMapper
 from dse4wse.utils import logger
+from dse4wse.gnn.dataloader import process_noception_gnn_data
 
 from .base import BaseWseEvaluator
 
@@ -586,6 +587,7 @@ class GnnReticleLevelWseEvaluator(LpReticleLevelWseEvaluator):
         total_latency = 0
         for vrid in target_vrids[:1]:
             gnn_data = self.dump_graph_v2(vrid)
+            gnn_data = process_noception_gnn_data(gnn_data)
             pred = self.gnn_model(gnn_data['graph'], gnn_data['graph_feat'])
             transmission_latency = pred * gnn_data['num_total_flit']
             total_latency_ = max(transmission_latency, gnn_data['compute_latency'], gnn_data['dram_access_latency'])
