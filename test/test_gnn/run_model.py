@@ -25,12 +25,12 @@ def get_dataset(training=True):
 def get_model(gnn_params, save_path=None):
     model = NoCeptionNet(**gnn_params)
     if save_path:
-        checkpoint = torch.load(save_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-    # logger.debug(checkpoint['model_state_dict'])
+        assert os.path.exists(save_path)
+        model = torch.load(save_path)
     # for name, param in model.named_parameters():
-    #     logger.debug(name)
-    #     logger.debug(param)
+    #     assert checkpoint['model_state_dict'][name] == param
+        # logger.debug(name)
+        # logger.debug(param)
     return model
 
 def train_model(model, dataset, batch_size=8):
@@ -71,17 +71,19 @@ def train_model(model, dataset, batch_size=8):
         logger.info(f"learning rate: {lr_schduler._last_lr}")
         logger.info(f"average loss: {total_loss / len(dataset)}")
 
+        # if True:
         if (epoch + 1) % 5 == 0:
-            model.eval()
-            test_model(model, get_dataset(training=True))
-            test_model(model, get_dataset(training=False))
-            checkpoint = {
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'epoch': epoch,
-            }
-            model.train()
-            torch.save(checkpoint, checkpoint_path)
+            # model.eval()
+            # test_model(model, get_dataset(training=True))
+            # test_model(model, get_dataset(training=False))
+            # model.train()
+            torch.save(model, checkpoint_path)
+            
+            # reload the model
+            # model = torch.load(checkpoint_path)
+            # model.eval()
+            # test_model(model, get_dataset(training=False))
+            # model.train()
 
 def test_model(model, dataset):
     total_mae = []
@@ -104,23 +106,23 @@ def test_model(model, dataset):
     logger.info(f"Overall MAPE: {avg_mape}")
 
 def run(gnn_params={}):
+    # model = get_model(gnn_params)
+
+    gnn_params = {
+        'h_dim': 128,
+        'n_layer': 3,
+        'use_deeper_mlp_for_inp': True,
+        'use_deeper_mlp_for_edge_func': True,
+        'pooling': 'set2set',
+    }
+    # model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-27-11-26-21-121131.pth"))
     model = get_model(gnn_params)
 
-    # gnn_params = {
-    #     'h_dim': 128,
-    #     'n_layer': 3,
-    #     'use_deeper_mlp_for_inp': True,
-    #     'use_deeper_mlp_for_edge_func': True,
-    #     'pooling': 'set2set',
-    # }
-    # model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-24-05-40-30-946075.pth"))
-    model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-24-11-36-25-542607.pth"))
+    train_model(model, get_dataset(training=True))  # smaller dataset for debugging
 
-    # train_model(model, get_dataset(training=True))
-
-    model.eval()
-    test_model(model, get_dataset(training=True))
-    test_model(model, get_dataset(training=False))
+    # model.eval()
+    # test_model(model, get_dataset(training=False))
+    # test_model(model, get_dataset(training=False))
 
 if __name__ == "__main__":
     run()

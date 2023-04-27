@@ -236,8 +236,12 @@ class NoCeptionNet(nn.Module):
             else:
                 self.mo_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
                 self.mi_linears.append(nn.Linear(h_dim, h_dim ** 2 // 2))
-            self.mi_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mi_linears[i](edge), aggregator_type='max'))
-            self.mo_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, lambda edge: self.mo_linears[i](edge), aggregator_type='max'))
+
+            mi_edge_func = self.create_edge_func('in', i)
+            mo_edge_func = self.create_edge_func('out', i)
+
+            self.mi_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, mi_edge_func, aggregator_type='max'))
+            self.mo_convs.append(dglnn.NNConv(self.h_dim, self.h_dim // 2, mo_edge_func, aggregator_type='max'))
 
         
         self.use_norm = use_norm
@@ -264,6 +268,16 @@ class NoCeptionNet(nn.Module):
             self.act_func,
             nn.Linear(4 * h_dim, 1),
         )
+
+    def create_edge_func(self, direction, layer):
+        assert layer in range(self.n_layer)
+        if direction == 'in':
+            linear = self.mi_linears[layer]
+        elif direction == 'out':
+            linear = self.mo_linears[layer]
+        else:
+            raise NotImplementedError
+        return linear
 
     def forward(self, G: dgl.graph):
         # convert input to hidden
