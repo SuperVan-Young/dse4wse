@@ -544,6 +544,18 @@ class WseTransformerRunner():
         """
         raise NotImplementedError
     
+    def get_simulation_elapsed_time(self) -> float:
+        self._find_best_intra_model_chunk_exec_params(inference=True)
+
+        total_cycles = self.get_propagation_latency(inference=True, detailed_report=False)
+        num_reticle = self.wafer_scale_engine.reticle_array_height * self.wafer_scale_engine.reticle_array_width
+        simulation_factor = 1  # how many host cycle can simulate 1 target cycle
+        
+        repeated_times = ceil(self.micro_batch_size / self.nano_batch_size) * self.weight_swapping_factor
+
+        elapsed_time = total_cycles * num_reticle * simulation_factor / repeated_times
+        return elapsed_time
+
 class ReticleFidelityWseTransformerRunner(WseTransformerRunner):
     """ Estimate WSE performance with higher fidelity
     Propagation latency now considers more inter-reticle transmission features: 
