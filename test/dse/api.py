@@ -12,6 +12,7 @@ import pickle as pkl
 from typing import Tuple
 import multiprocessing as mp
 from tqdm import tqdm
+import time
 
 # make sure dse4wse filefolder is in your PATH
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -205,10 +206,21 @@ def design_space_exploration():
         }
         evaluate_design_point(design_point = test_design_point, model_parameters = test_model_parameters)
 
-def test_fidelity_accuracy(fidelity='naive'):
+class Timer:
+    def __enter__(self):
+        logger.info(f"Entering timer context")
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, *args):
+        self.end_time = time.time()
+        self.elapsed_time = self.end_time - self.start_time
+        logger.info(f"Elapsed time: {self.elapsed_time:.6f} seconds")
+
+def test_fidelity_accuracy(fidelity='naive', benchmark_size='small'):
     """ test the accuracy of naive & GNN fidelity against LP solver
     """
-    logger.info(f"Testing fidelity {fidelity}'s accuracy against LP solver")
+    logger.info(f"Testing fidelity {fidelity}'s accuracy against LP solver on {benchmark_size} benchmarks")
 
     # build a list of design point and model parameters
     legal_points = []
@@ -228,41 +240,47 @@ def test_fidelity_accuracy(fidelity='naive'):
     else:
         raise NotImplementedError
 
-    # preload pretrained gnn model for better efficiency. For now we hardcode the best one we get
-    best_model_param = {
-        'h_dim': 128,
-        'n_layer': 3,
-        'use_deeper_mlp_for_inp': True,
-        'use_deeper_mlp_for_edge_func': True,
-        'pooling': 'set2set',
+    # we manually divide design points by benchmark workload size
+    benchmark_size_2_hidden_size = {
+        'small': [2304, 3072, 4096, 6144, 8192],
+        'medium': [10240, 12288, 16384, 20480, 25600],
+        'large': [32000, 43200, 66560, 80600, 102000, 158720],
     }
-    gnn_model = NoCeptionNet(**best_model_param)
+    hidden_sizes = benchmark_size_2_hidden_size[benchmark_size]
+    legal_points = [lp for lp in legal_points if lp[1]['hidden_size'] in hidden_sizes]
+    logger.debug(f"Number of legal points: {len(legal_points)}")
 
-    checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_gnn', 'checkpoint', "model_2023-04-24-05-40-30-946075.pth")
-    checkpoint = torch.load(checkpoint_path)
-    gnn_model.load_state_dict(checkpoint['model_state_dict'])
+    # preload pretrained gnn model for better efficiency. For now we hardcode the best one we get
+
+    # checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_gnn', 'checkpoint', "model_2023-04-27-11-26-21-121131.pth")
+    # gnn_model = torch.load(checkpoint_path)
+    # gnn_model.eval()
+    gnn_model = None
 
     # now let's test some transformer runner!
     baseline_results = []
     test_results = []
 
-    def worker(design_point, model_parameters) -> Tuple[int, int]:
-        wafer_scale_engine = create_wafer_scale_engine(**design_point)
-        baseline_evaluator = create_evaluator(True, wafer_scale_engine, **model_parameters)
+    def worker(design_point, model_parameters, fidelity='baseline') -> int:
+        for handler in logger.handlers:
+            handler.setLevel('WARNING')
 
-        test_evaluator = None
-        if fidelity == 'naive':
-            test_evaluator = create_evaluator(False, wafer_scale_engine, **model_parameters)
+        wafer_scale_engine = create_wafer_scale_engine(**design_point)
+        evaluator = None
+        if fidelity == 'baseline':
+            evaluator = create_evaluator(True, wafer_scale_engine, **model_parameters)
+        elif fidelity == 'naive':
+            evaluator = create_evaluator(False, wafer_scale_engine, **model_parameters)
         elif fidelity == 'gnn':
-            test_evaluator = create_gnn_evaluator(gnn_model, wafer_scale_engine, **model_parameters)
+            evaluator = create_gnn_evaluator(gnn_model, wafer_scale_engine, **model_parameters)
         else:
             raise NotImplementedError
 
-        # TODO: more metrics
-        baseline_result = baseline_evaluator.get_training_throughput()
-        test_result = test_evaluator.get_training_throughput()
+        result = evaluator.get_training_throughput()
 
-        return (baseline_result, test_result)
+        for handler in logger.handlers:
+            handler.setLevel('DEBUG')
+        return result
 
     def get_mae():
         baseline_results_ = np.array(baseline_results)
@@ -279,11 +297,15 @@ def test_fidelity_accuracy(fidelity='naive'):
         return mape
     
     tqdm_bar = tqdm(legal_points)
+    with Timer():
+        for design_point, model_parameters in tqdm_bar:
+            result = worker(design_point, model_parameters, fidelity=fidelity)
+            test_results.append(result)
+    
+    tqdm_bar = tqdm(legal_points)
     for design_point, model_parameters in tqdm_bar:
-        result = worker(design_point, model_parameters)
-        baseline_results.append(result[0])
-        test_results.append(result[1])
-        tqdm_bar.set_description(f"MAPE = {get_mape():.4%}")
+        result = worker(design_point, model_parameters, fidelity='baseline')
+        baseline_results.append(result)
 
     # analyze the result
     logger.info(f"MAE = {get_mae()}")
@@ -292,5 +314,7 @@ def test_fidelity_accuracy(fidelity='naive'):
 
 if __name__ == "__main__":
     # design_space_exploration()
-    test_fidelity_accuracy(fidelity='gnn')
-    # test_fidelity_accuracy(fidelity='naive')
+    # for benchmark_size in ['small', 'medium', 'large']:
+    for benchmark_size in ['large']:
+        test_fidelity_accuracy(fidelity='naive', benchmark_size=benchmark_size)
+        # test_fidelity_accuracy(fidelity='gnn')
