@@ -17,3 +17,6 @@ python test/attention/test_attention.py --case 0
 ## PE Graph Estimation
 
 We provide evaluator for DSE frameworks in `test/dse/api.py`, in which you can find detailed description.
+
+## Use trained GNN model
+Put your GNN model in test/test_gnn/checkpoint/
