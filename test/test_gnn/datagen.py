@@ -188,7 +188,7 @@ def generate_batch_gnn_data(idx_range=None, multiprocess=False, training=True, n
     for file in os.listdir(data_dir):
         os.remove(os.path.join(data_dir, file))
 
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points.pickle"), 'rb') as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "legal_points_new.pickle"), 'rb') as f:
         legal_points = pkl.load(f)
     random.shuffle(legal_points, lambda : seed)  # fixed random seed
     if idx_range == None:
@@ -206,6 +206,6 @@ def test_dataloader():
         logger.debug(data)
 
 if __name__ == "__main__":
-    generate_batch_gnn_data(idx_range=400, multiprocess=True, training=True)
-    generate_batch_gnn_data(idx_range=200, multiprocess=True, training=False)
+    generate_batch_gnn_data(idx_range=None, multiprocess=True, training=True)
+    generate_batch_gnn_data(idx_range=None, multiprocess=True, training=False)
     test_dataloader()

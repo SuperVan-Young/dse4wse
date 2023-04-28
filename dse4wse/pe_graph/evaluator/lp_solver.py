@@ -552,7 +552,7 @@ class LpReticleLevelWseEvaluator(BaseWseEvaluator):
         # build edge feats
         edge_feats = []
         core_noc_bw = self.hardware.reticle_config['inter_core_bandwidth'] / WSE_FREQUENCY * 8
-        inter_reticle_bw = self.hardware.inter_reticle_bandwidth / self.hardware.reticle_config['inter_core_bandwidth']
+        inter_reticle_bw = self.hardware.inter_reticle_bandwidth / self.hardware.reticle_config['inter_core_bandwidth'] / min(self.hardware.reticle_array_height, self.hardware.reticle_array_width)
 
         # number of classes should follow design_space.json's specification
         # for convenience, we hardcode available values

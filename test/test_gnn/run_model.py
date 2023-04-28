@@ -84,6 +84,11 @@ def train_model(model, dataset, batch_size=8):
             # model.eval()
             # test_model(model, get_dataset(training=False))
             # model.train()
+        if (epoch + 1) % 15 == 0:
+            model.eval()
+            test_model(model, get_dataset(training=False))
+            model.train()
+
 
 def test_model(model, dataset):
     total_mae = []
@@ -115,13 +120,13 @@ def run(gnn_params={}):
         'use_deeper_mlp_for_edge_func': True,
         'pooling': 'set2set',
     }
-    model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-27-13-56-22-753945.pth"))
-    # model = get_model(gnn_params)
+    # model = get_model(gnn_params, os.path.join(CHECKPOINT_DIR, "model_2023-04-27-13-56-22-753945.pth"))
+    model = get_model(gnn_params)
 
-    # train_model(model, get_dataset(training=True))  # smaller dataset for debugging
+    train_model(model, get_dataset(training=True))  # smaller dataset for debugging
 
-    model.eval()
-    test_model(model, get_dataset(training=False))
+    # model.eval()
+    # test_model(model, get_dataset(training=False))
 
 if __name__ == "__main__":
     run()

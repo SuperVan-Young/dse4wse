@@ -94,7 +94,7 @@ def test_fidelity_accuracy(fidelity, legal_points):
 
     # preload pretrained gnn model for better efficiency. For now we hardcode the best one we get
 
-    checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_gnn', 'checkpoint', "model_2023-04-27-13-56-22-753945.pth")
+    checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'test_gnn', 'checkpoint', "model_2023-04-29-00-29-43-272787.pth")
     gnn_model = torch.load(checkpoint_path)
     gnn_model.eval()
 
@@ -116,8 +116,12 @@ def test_fidelity_accuracy(fidelity, legal_points):
             evaluator = create_gnn_evaluator(gnn_model, wafer_scale_engine, **model_parameters)
         else:
             raise NotImplementedError
-
-        result = evaluator.get_training_throughput()
+        try:
+            result = evaluator.get_training_throughput()
+        except:
+            logger.warning("Failure in getting training throughput")
+            # 100% fidelity
+            result = 0
 
         for handler in logger.handlers:
             handler.setLevel('DEBUG')
@@ -185,13 +189,15 @@ def main():
     if not os.path.exists(EVALUATION_REPORT_DIR):
         os.mkdir(EVALUATION_REPORT_DIR)
 
-    for fidelity in ['naive', 'gnn']:
+    # for fidelity in ['naive', 'gnn']:
+    for fidelity in ['gnn']:
         df = pd.DataFrame(columns=['average_time', 'accuracy'])
         for benchmark_size in range(15):
             legal_points = build_legal_points(benchmark_size=benchmark_size)
             report = test_fidelity_accuracy(fidelity=fidelity, legal_points=legal_points)
             df.loc[len(df.index)] = report
         df.to_csv(os.path.join(EVALUATION_REPORT_DIR, f"{fidelity}.csv"), index=True)
+    exit(1)
 
     # simulation results 
     df = pd.DataFrame(columns=['average_time', 'accuracy'])
