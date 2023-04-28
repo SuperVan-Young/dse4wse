@@ -62,7 +62,7 @@ def create_wafer_scale_engine(
     wse_config = {
         'reticle_array_height': reticle_array_h,
         'reticle_array_width': reticle_array_w,
-        'inter_reticle_bandwidth': reticle_bw * core_noc_bw * WSE_FREQUENCY / 8,  # 如果是相对带宽，要做一个转换！
+        'inter_reticle_bandwidth': reticle_bw * core_noc_bw * WSE_FREQUENCY * min(reticle_array_h, reticle_array_w) / 8,  # 如果是相对带宽，要做一个转换！
         'dram_size': np.inf,  # ideally
         'dram_bandwidth': wafer_mem_bw * WSE_FREQUENCY,
         'dram_stacking_type': dram_stacking_type,
